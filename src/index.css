@@ -145,6 +145,10 @@ body {
   margin-bottom: 2rem;
 }
 
+.stats-grid-5 {
+  grid-template-columns: repeat(5, 1fr);
+}
+
 .stat-card {
   background-color: rgba(255,255,255,0.02);
   border-radius: 8px;
@@ -170,6 +174,7 @@ body {
 .text-danger { color: var(--danger-color); }
 .text-warning { color: var(--warning-color); }
 .text-accent { color: var(--accent-color); }
+.text-orange { color: #f97316; }
 
 .table-container {
   overflow-x: auto;
@@ -222,4 +227,10 @@ tbody tr:hover {
   background-color: rgba(245, 158, 11, 0.15);
   color: var(--warning-color);
   border: 1px solid rgba(245, 158, 11, 0.3);
+}
+
+.status-alert {
+  background-color: rgba(249, 115, 22, 0.15);
+  color: #f97316;
+  border: 1px solid rgba(249, 115, 22, 0.3);
 }
