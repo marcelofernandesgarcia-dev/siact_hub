@@ -1,4 +1,4 @@
-import { useState, useMemo } from 'react';
+import { useState, useMemo, Component, type ReactNode } from 'react';
 import * as XLSX from 'xlsx';
 import { UploadCloud, CheckCircle, XCircle, AlertCircle, Play, Download, BarChart2, PieChart, ShieldCheck, TrendingUp } from 'lucide-react';
 import './index.css';
@@ -23,28 +23,32 @@ const expandMergedCells = (ws: XLSX.WorkSheet): void => {
   }
 };
 
-// FIX-3 (Vuln 1, 2): Mapping rules — corrected entries:
-// · "Proposta/Plano de Trabalho Aprovado" duplicate REMOVED (normalizeStatusKey handles it)
-// · 811210110 added to "PC Concluída" — Arquivados follows Concluído on the grantor ledger.
-//   Validate this mapping with the fiscal team before closing the finding.
-// · Empty arrays are intentional PENDING sentinels → produce "Regra Pendente - Revisar",
-//   never "Inconsistência". Fill them once the correct SIAFI accounts are confirmed.
+// RITO ORDINÁRIO — Tabela de Validação (Situação Transferegov → Conjunto de Contas SIAFI Válidas)
+// Regra: se TODAS as contas detectadas pertencem ao conjunto → "Correto".
+// Se QUALQUER conta está fora do conjunto → "Inconsistência (Rito Patológico)".
+// Arrays vazios são sentinelas PENDENTES → "Regra Pendente - Revisar" (nunca "Inconsistência").
 const validationRules: Record<string, string[]> = {
-  "Aguardando prestação de contas":             ["812210202", "811210102"],
-  "Cancelado":                                  ["812210108", "811210106"],
-  "Convênio Anulado":                           ["812210109"],
-  "Convenio Rescindido":                        ["811210109"],
-  "Em execução":                                ["811210100", "812210101", "812210201", "811210103"],
-  "Prestação de Contas em Complementação":      [],
-  "Inadimplente":                               ["812210106"],
-  "Prestação de Contas Aprovada":               ["812210104"],
-  "Prestação de Contas Aprovada com Ressalvas": [],
-  "Prestação de Contas Comprovada em Análise":  ["812210103", "812210105", "812210107"],
-  "Prestação de Contas Concluída":              ["812210211", "811210110"],
-  "Prestação de Contas em Análise":             ["812210203"],
-  "Prestação de Contas Iniciada por Antecipação": [],
-  "Prestação de Contas Rejeitada":              ["812210106"],
-  "Proposta de Plano de Trabalho Aprovado":     ["712210101"],
+  // Celebração
+  "Proposta de Plano de Trabalho Aprovado":        ["712210101"],
+  // Execução — aceita múltiplas contas simultâneas (saldo a liberar + executado + a repassar)
+  "Em execução":                                   ["811210100", "812210101", "812210201", "811210103"],
+  // Aguardando P.C. — foco na obrigação de comprovar o recurso recebido
+  "Aguardando prestação de contas":                ["812210202", "811210102"],
+  // P.C. em Análise — transição entre entrega dos documentos e o parecer técnico
+  "Prestação de Contas em Análise":                ["812210103", "812210202", "811210102"],
+  // P.C. em Complementação — aguardando saneamento de dúvidas técnicas
+  "Prestação de Contas em Complementação":         ["812210103"],
+  // Demais estágios
+  "Cancelado":                                     ["812210108", "811210106"],
+  "Convênio Anulado":                              ["812210109"],
+  "Convenio Rescindido":                           ["811210109"],
+  "Inadimplente":                                  ["812210106"],
+  "Prestação de Contas Aprovada":                  ["812210104"],
+  "Prestação de Contas Aprovada com Ressalvas":    [],
+  "Prestação de Contas Comprovada em Análise":     ["812210103", "812210105", "812210107"],
+  "Prestação de Contas Concluída":                 ["812210211", "811210110"],
+  "Prestação de Contas Iniciada por Antecipação":  [],
+  "Prestação de Contas Rejeitada":                 ["812210106"],
 };
 
 // SKILL §6 — Dicionário de Tradução Oficial (Tabela de Referência CSV/Imagens)
@@ -111,6 +115,43 @@ const CRITICAL_ACCS = [
   { code: "811210109", label: "Extinto",     color: "#8b5cf6" },
   { code: "811210100", label: "Em Execução", color: "#f59e0b" },
 ];
+
+class ErrorBoundary extends Component<
+  { children: ReactNode },
+  { error: Error | null }
+> {
+  constructor(props: { children: ReactNode }) {
+    super(props);
+    this.state = { error: null };
+  }
+  static getDerivedStateFromError(error: Error) {
+    return { error };
+  }
+  componentDidCatch(error: Error, info: { componentStack: string }) {
+    console.error('SIACT render error:', error, info.componentStack);
+  }
+  render() {
+    if (this.state.error) {
+      return (
+        <div style={{ padding: '2rem', margin: '2rem', background: '#1e2d40', borderRadius: 12, border: '1px solid #ef4444' }}>
+          <p style={{ color: '#ef4444', fontWeight: 700, fontSize: '1rem', marginBottom: '0.5rem' }}>
+            Erro interno — copie o texto abaixo e envie para suporte:
+          </p>
+          <pre style={{ color: '#fca5a5', fontSize: '0.75rem', whiteSpace: 'pre-wrap', wordBreak: 'break-all', margin: '0 0 1rem', fontFamily: 'monospace' }}>
+            {this.state.error.message}{'\n\n'}{this.state.error.stack}
+          </pre>
+          <button
+            onClick={() => this.setState({ error: null })}
+            style={{ padding: '0.5rem 1.2rem', background: '#3b82f6', color: '#fff', border: 'none', borderRadius: 8, cursor: 'pointer', fontSize: '0.85rem' }}
+          >
+            Resetar e tentar novamente
+          </button>
+        </div>
+      );
+    }
+    return this.props.children;
+  }
+}
 
 export default function App() {
   const [fileTransferegov, setFileTransferegov] = useState<File | null>(null);
@@ -189,8 +230,8 @@ export default function App() {
     const idTrim = filterNrInstrumento.trim();
     const siafTrim = filterSituacaoSiafi.trim().toLowerCase();
     return results.filter(r => {
-      if (idTrim && !r.idSiafi.includes(idTrim)) return false;
-      if (siafTrim && !r.situacaoSiafiDisplay.toLowerCase().includes(siafTrim)) return false;
+      if (idTrim && !String(r.idSiafi ?? '').includes(idTrim)) return false;
+      if (siafTrim && !String(r.situacaoSiafiDisplay ?? '').toLowerCase().includes(siafTrim)) return false;
       if (filterStatus && r.statusConciliacao !== filterStatus) return false;
       return true;
     });
@@ -481,7 +522,6 @@ export default function App() {
           }
         }
 
-        const contaCode = detectedAccounts.length === 1 ? detectedAccounts[0].code : "";
         const situacaoSiafiDisplay =
           detectedAccounts.length === 0
             ? "Sem Saldo no SIAFI"
@@ -512,24 +552,19 @@ export default function App() {
         let situacaoRawTg = "Sem Registro no Transferegov";
         let convenenteNome = convenenteSiafi || "Não Informado";
         let statusConciliacao = "";
+        let contasForaDoConjunto: string[] = [];
 
         // Pre-populate TG situation for ALL branches (multi-account rows included).
-        // Prefer the header-detected status text; fall back to col P fixed position.
         if (tgMap.has(idSiafi) && !tgMap.get(idSiafi)!.ambiguous) {
           const tgEntry = tgMap.get(idSiafi)!;
-          // Header-detected status is authoritative; col P (idx 15) as fallback only
           situacaoRawTg = tgEntry.status || String(tgEntry.fullRow[15] ?? "").trim();
         }
 
-        if (detectedAccounts.length > 1) {
-          // FIX-2: Multiple balances — cannot auto-reconcile, human review required
-          statusConciliacao = "Múltiplas Contas - Revisar";
-          if (!confirmedCorrectIds.has(idSiafi)) alertas++;
-        } else if (tgMap.has(idSiafi)) {
+        if (tgMap.has(idSiafi)) {
           const tgData = tgMap.get(idSiafi)!;
 
           if (tgData.ambiguous) {
-            // FIX-7: Blind scanner found multiple ID candidates on the TG row
+            // Blind scanner found multiple ID candidates on the TG row
             situacaoTg = "Ambiguidade no ID (TG)";
             statusConciliacao = "Revisão Manual - ID Ambíguo";
             if (!confirmedCorrectIds.has(idSiafi)) alertas++;
@@ -539,34 +574,47 @@ export default function App() {
               convenenteNome = tgData.convenente;
             }
 
-            if (contaCode) {
-              // FIX-4: normalizeStatusKey resolves "Proposta/Plano" → "proposta de plano"
+            if (detectedAccounts.length === 0) {
+              // Zero balance in all SIAFI accounts
+              statusConciliacao = "Sem Saldo no SIAFI";
+              if (!confirmedCorrectIds.has(idSiafi)) alertas++;
+            } else {
+              // RITO ORDINÁRIO: resolve valid set for this TG situation
               const matchedRuleKey = Object.keys(validationRules).find(
                 rule => normalizeStatusKey(rule) === normalizeStatusKey(situacaoTg)
               );
 
-              if (matchedRuleKey) {
-                const validAccounts = validationRules[matchedRuleKey];
-                if (validAccounts.length === 0) {
-                  // FIX-3: Empty array sentinel — rule not yet configured
-                  statusConciliacao = "Regra Pendente - Revisar";
-                  if (!confirmedCorrectIds.has(idSiafi)) alertas++;
-                } else if (validAccounts.includes(contaCode)) {
-                  statusConciliacao = "Correto";
-                  corretos++;
-                  confirmedCorrectIds.add(idSiafi);
-                } else {
-                  statusConciliacao = "Inconsistência";
-                  if (!confirmedCorrectIds.has(idSiafi)) inconsistencias++;
-                }
-              } else {
+              if (!matchedRuleKey) {
                 statusConciliacao = "Status Não Mapeado";
                 if (!confirmedCorrectIds.has(idSiafi)) inconsistencias++;
+              } else {
+                const validSet = validationRules[matchedRuleKey];
+
+                if (validSet.length === 0) {
+                  // Empty-array sentinel — rule not yet configured
+                  statusConciliacao = "Regra Pendente - Revisar";
+                  if (!confirmedCorrectIds.has(idSiafi)) alertas++;
+                } else {
+                  // RITO ORDINÁRIO core check:
+                  // ALL detected accounts must belong to the valid set.
+                  // Having multiple valid accounts simultaneously is CORRECT.
+                  // Any account outside the set → Rito Patológico → Inconsistência.
+                  contasForaDoConjunto = detectedAccounts
+                    .filter(a => !validSet.includes(a.code))
+                    .map(a => a.display);
+
+                  if (contasForaDoConjunto.length === 0) {
+                    // Every detected account is within the valid set → Correto
+                    statusConciliacao = "Correto";
+                    corretos++;
+                    confirmedCorrectIds.add(idSiafi);
+                  } else {
+                    // At least one account is outside the valid set → Rito Patológico
+                    statusConciliacao = "Inconsistência (Rito Patológico)";
+                    if (!confirmedCorrectIds.has(idSiafi)) inconsistencias++;
+                  }
+                }
               }
-            } else {
-              // Zero balance in all SIAFI accounts — structurally distinct from a mismatch
-              statusConciliacao = "Sem Saldo no SIAFI";
-              if (!confirmedCorrectIds.has(idSiafi)) alertas++;
             }
           }
         } else {
@@ -576,9 +624,12 @@ export default function App() {
 
         let motivo = "";
         if (statusConciliacao === "Correto") {
-          motivo = "OK";
-        } else if (statusConciliacao === "Múltiplas Contas - Revisar") {
-          motivo = `Múltiplas contas detectadas: ${situacaoSiafiDisplay}`;
+          const nContas = detectedAccounts.length;
+          motivo = nContas > 1
+            ? `OK — ${nContas} contas dentro do conjunto válido (Rito Ordinário): ${situacaoSiafiDisplay}`
+            : "OK";
+        } else if (statusConciliacao === "Inconsistência (Rito Patológico)") {
+          motivo = `Conta(s) fora do conjunto válido para '${situacaoTg}': ${contasForaDoConjunto.join(' | ')}`;
         } else if (statusConciliacao === "Revisão Manual - ID Ambíguo") {
           motivo = "Múltiplos IDs candidatos na mesma linha do Transferegov.";
         } else if (statusConciliacao === "Regra Pendente - Revisar") {
@@ -688,22 +739,23 @@ export default function App() {
   const getStatusBadgeClass = (status: string): string => {
     if (status === 'Correto') return 'status-correct';
     if (status === 'Sem Registro no Transferegov') return 'status-not-found';
-    if (['Múltiplas Contas - Revisar', 'Regra Pendente - Revisar',
-         'Sem Saldo no SIAFI', 'Revisão Manual - ID Ambíguo'].includes(status)) return 'status-alert';
-    return 'status-incorrect';
+    if (['Regra Pendente - Revisar', 'Sem Saldo no SIAFI',
+         'Revisão Manual - ID Ambíguo', 'Status Não Mapeado'].includes(status)) return 'status-alert';
+    return 'status-incorrect'; // Inconsistência (Rito Patológico) e outros
   };
 
   const getStatusIcon = (status: string) => {
     const style = { display: 'inline' as const, marginRight: '4px', verticalAlign: 'text-bottom' as const };
     if (status === 'Correto') return <CheckCircle size={14} style={style} />;
-    if (['Múltiplas Contas - Revisar', 'Regra Pendente - Revisar',
-         'Sem Saldo no SIAFI', 'Revisão Manual - ID Ambíguo',
+    if (['Regra Pendente - Revisar', 'Sem Saldo no SIAFI',
+         'Revisão Manual - ID Ambíguo', 'Status Não Mapeado',
          'Sem Registro no Transferegov'].includes(status)) return <AlertCircle size={14} style={style} />;
-    return <XCircle size={14} style={style} />;
+    return <XCircle size={14} style={style} />; // Inconsistência (Rito Patológico)
   };
 
   return (
-    <div className="app-container">
+    <ErrorBoundary>
+    <div className="app-container" translate="no">
       <div className="header">
         <h1>SIACT Hub</h1>
         <p>Auditor Digital MTur — Conciliação Transferegov × SIAFI (Tesouro Gerencial)</p>
@@ -918,14 +970,13 @@ export default function App() {
               style={{ flex: '1 1 180px', minWidth: 160, padding: '0.45rem 0.75rem', border: '1px solid #cbd5e1', borderRadius: 8, fontSize: '0.82rem', background: '#fff', outline: 'none' }}
             >
               <option value="">Todos os Status</option>
-              <option value="Correto">Correto</option>
-              <option value="Inconsistência">Inconsistência</option>
-              <option value="Sem Registro no Transferegov">Sem Registro no Transferegov</option>
-              <option value="Múltiplas Contas - Revisar">Múltiplas Contas - Revisar</option>
-              <option value="Regra Pendente - Revisar">Regra Pendente - Revisar</option>
-              <option value="Sem Saldo no SIAFI">Sem Saldo no SIAFI</option>
-              <option value="Revisão Manual - ID Ambíguo">Revisão Manual - ID Ambíguo</option>
-              <option value="Status Não Mapeado">Status Não Mapeado</option>
+              <option value="Correto">✅ Correto (Rito Ordinário)</option>
+              <option value="Inconsistência (Rito Patológico)">⛔ Inconsistência (Rito Patológico)</option>
+              <option value="Sem Registro no Transferegov">🔍 Sem Registro no Transferegov</option>
+              <option value="Regra Pendente - Revisar">⏳ Regra Pendente - Revisar</option>
+              <option value="Sem Saldo no SIAFI">⚠️ Sem Saldo no SIAFI</option>
+              <option value="Revisão Manual - ID Ambíguo">🔀 Revisão Manual - ID Ambíguo</option>
+              <option value="Status Não Mapeado">❓ Status Não Mapeado</option>
             </select>
             {(filterNrInstrumento || filterSituacaoSiafi || filterStatus) && (
               <button
@@ -984,25 +1035,27 @@ export default function App() {
                     <td>{row.idSiafi}</td>
                     {/* B — Convenente (carry-forward) */}
                     <td title={row.convenenteSiafi || row.convenenteNome}>
-                      {(row.convenenteSiafi || row.convenenteNome || '').length > 28
-                        ? (row.convenenteSiafi || row.convenenteNome).substring(0, 28) + '…'
-                        : (row.convenenteSiafi || row.convenenteNome)}
+                      {(() => {
+                        const conv = String(row.convenenteSiafi || row.convenenteNome || '');
+                        return conv.length > 28 ? conv.substring(0, 28) + '…' : conv || '—';
+                      })()}
                     </td>
                     {/* C — CNPJ (carry-forward) */}
                     <td>{row.cnpjSiafi || '—'}</td>
                     {/* D — Situação Transferegov */}
-                    <td>{row.situacaoRawTg}</td>
+                    <td>{String(row.situacaoRawTg ?? '—')}</td>
                     {/* E — Situação SIAFI (nomes por extenso do accountMap) */}
-                    <td title={row.situacaoSiafiDisplay}>
-                      {row.situacaoSiafiDisplay.length > 45
-                        ? row.situacaoSiafiDisplay.substring(0, 45) + '…'
-                        : row.situacaoSiafiDisplay}
+                    <td title={String(row.situacaoSiafiDisplay ?? '')}>
+                      {(() => {
+                        const siafi = String(row.situacaoSiafiDisplay ?? '');
+                        return siafi.length > 45 ? siafi.substring(0, 45) + '…' : siafi || '—';
+                      })()}
                     </td>
                     {/* F — Status Conciliação */}
                     <td>
-                      <span className={`status-badge ${getStatusBadgeClass(row.statusConciliacao)}`}>
-                        {getStatusIcon(row.statusConciliacao)}
-                        {row.statusConciliacao}
+                      <span className={`status-badge ${getStatusBadgeClass(String(row.statusConciliacao ?? ''))}`}>
+                        {getStatusIcon(String(row.statusConciliacao ?? ''))}
+                        {String(row.statusConciliacao ?? '—')}
                       </span>
                     </td>
                   </tr>
@@ -1018,5 +1071,6 @@ export default function App() {
         </div>
       )}
     </div>
+    </ErrorBoundary>
   );
 }
