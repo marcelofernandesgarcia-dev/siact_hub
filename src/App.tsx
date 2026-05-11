@@ -47,26 +47,23 @@ const validationRules: Record<string, string[]> = {
   "Proposta de Plano de Trabalho Aprovado":     ["712210101"],
 };
 
-const accountNames: Record<string, string> = {
-  "812210202": "A Comprovar",
-  "811210102": "Convenios e Instrumentos Congeneres a Comprovar",
-  "812210108": "Convênios e Instrumentos Congeneres Cancelados",
-  "811210106": "Convenios e Instrumentos Congeneres não recebidos",
-  "812210109": "Convênios e Instrumentos Congeneres Não Liberado/ Devolvido",
-  "811210109": "Convenios e Instrumentos Congeneres Extintos",
-  "811210100": "Execução Convenio e Instrumentos Congeneres",
-  "812210101": "Convenios e instrumentos a Liberar",
-  "812210201": "A repassar",
-  "811210103": "Convenios e Instrumentos Congeneres a Receber",
-  "812210106": "Convenios e instrumentos Congeneres em Inadimplencia Efetiva",
-  "812210104": "Convênios e Instrumentos Congeneres Aprovado",
-  "812210103": "Convenios e Instrumentos Congeneres a Aprovar",
-  "812210105": "Convenios e Instrumentos Congeneres Impugnados",
-  "812210107": "Convênios e Instrumentos Congeneres em Inadimplencias Suspensa",
-  "812210211": "Concluido",
-  "812210203": "Comprovado",
-  "712210101": "Valores Firmados",
-  "811210110": "Convenios e Instrumentos Congeneres Arquivados",
+// SKILL §6 — Dicionário de Tradução Oficial (Tabela de Referência CSV/Imagens)
+// Mapeamento De-Para com descrições literais. NÃO alterar sem aprovação da equipe fiscal.
+const accountMap: Record<string, string> = {
+  '811210100': 'Execução de Convênios e Instrumentos Congêneres',
+  '811210102': 'Convênios e Instrumentos Congêneres a Comprovar',
+  '811210103': 'Convênios e Instrumentos Congêneres a Receber',
+  '811210106': 'Convênios e Instrumentos Congêneres não recebidos',
+  '811210109': 'Convênios e Instrumentos Congêneres a Anular',
+  '811210110': 'Convênios e Instrumentos Congêneres Arquivados',
+  '812210101': 'Convênios e instrumentos a Liberar',
+  '812210103': 'Convênios e Instrumentos Congêneres a Aprovar',
+  '812210106': 'Convênios e instrumentos Congêneres em Inadimplência Efetiva',
+  '812210108': 'Convênios e Instrumentos Congêneres Cancelados',
+  '812210109': 'Convênios e Instrumentos Congêneres Não Liberado/ Devolvido',
+  '812210201': 'A repassar',
+  '812210202': 'A Comprovar',
+  '712210101': 'Valores Firmados',
 };
 
 const normalizeText = (text: string) => {
@@ -123,6 +120,9 @@ export default function App() {
   const [stats, setStats] = useState({
     total: 0, corretos: 0, inconsistencias: 0, naoEncontrados: 0, alertas: 0,
   });
+  const [filterNrInstrumento, setFilterNrInstrumento] = useState('');
+  const [filterSituacaoSiafi, setFilterSituacaoSiafi] = useState('');
+  const [filterStatus, setFilterStatus] = useState('');
 
   const dashboard = useMemo(() => {
     if (results.length === 0) return null;
@@ -184,6 +184,17 @@ export default function App() {
              uniqueInstruments: uniqueIds.size, totalEntries: results.length,
              singleEntry, multipleEntry };
   }, [results]);
+
+  const filteredResults = useMemo(() => {
+    const idTrim = filterNrInstrumento.trim();
+    const siafTrim = filterSituacaoSiafi.trim().toLowerCase();
+    return results.filter(r => {
+      if (idTrim && !r.idSiafi.includes(idTrim)) return false;
+      if (siafTrim && !r.situacaoSiafiDisplay.toLowerCase().includes(siafTrim)) return false;
+      if (filterStatus && r.statusConciliacao !== filterStatus) return false;
+      return true;
+    });
+  }, [results, filterNrInstrumento, filterSituacaoSiafi, filterStatus]);
 
   const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>, type: 'transferegov' | 'siafi') => {
     const file = e.target.files?.[0];
@@ -342,10 +353,13 @@ export default function App() {
 
       // --- 2. Process SIAFI (cross-tab handling) ---
       // ID is always col A (index 0) — CGU rigid mapping, no detection needed.
-      // Header scan only locates account-code columns and the header row index.
+      // Scan all header rows to detect CNPJ, Convenente and account-code columns.
+      // CNPJ/Convenente may be in a DIFFERENT row than the account codes (multi-row headers).
       let accountCols: { idx: number; code: string; headerName: string }[] = [];
       let siafiHeaderRowIdx = 0;
       let maxAccountColsFound = 0;
+      let cnpjColSiafiIdx = -1;
+      let convenentColSiafiIdx = -1;
 
       for (let i = 0; i < Math.min(20, rowsSiafi.length); i++) {
         const r = rowsSiafi[i];
@@ -354,6 +368,20 @@ export default function App() {
         const currentAccountCols: { idx: number; code: string; headerName: string }[] = [];
         r.forEach((cell, idx) => {
           const text = String(cell).trim();
+          const norm = normalizeText(text);
+
+          // Detect CNPJ column header in any row — matches "CNPJ", "CNPJ Convenente", "CNPJ/CPF", etc.
+          if (cnpjColSiafiIdx === -1 && norm.includes('cnpj') && !norm.includes('municipio') && !norm.includes('uf')) {
+            cnpjColSiafiIdx = idx;
+          }
+
+          // Detect Convenente column header in any row
+          if (convenentColSiafiIdx === -1 &&
+              (norm === 'convenente' || norm === 'proponente' || norm === 'favorecido' ||
+               (norm.includes('convenente') && !norm.includes('cnpj') && !norm.includes('uf')))) {
+            convenentColSiafiIdx = idx;
+          }
+
           const match = text.match(/\b\d{9}\b/);
           if (match) {
             currentAccountCols.push({ idx, code: match[0], headerName: text });
@@ -373,19 +401,39 @@ export default function App() {
         return;
       }
 
+      // Data-based CNPJ fallback: if header detection failed, find the column whose values
+      // consistently contain 14-digit numbers (Brazilian CNPJ pattern).
+      if (cnpjColSiafiIdx === -1) {
+        const sampleStart = siafiHeaderRowIdx + 1;
+        const sampleRows = rowsSiafi.slice(sampleStart, sampleStart + 20).filter(r => r && r.length > 0);
+        if (sampleRows.length > 0) {
+          const colCount = Math.max(...sampleRows.map(r => r.length));
+          for (let col = 0; col < colCount; col++) {
+            const hits = sampleRows.filter(r => {
+              const digits = String(r[col] ?? "").replace(/\D/g, "");
+              return digits.length >= 11 && digits.length <= 14;
+            }).length;
+            if (hits >= Math.ceil(sampleRows.length * 0.4)) {
+              cnpjColSiafiIdx = col;
+              break;
+            }
+          }
+        }
+      }
+
       let corretos = 0, inconsistencias = 0, naoEncontrados = 0, alertas = 0;
       const confirmedCorrectIds = new Set<string>();
       const finalResults: any[] = [];
 
-      // Pre-scan col A to blacklist repeating UG/constant codes (e.g. 570000).
-      // Any 6-7 digit value appearing in >50% of data rows is treated as a UG code, not a transfer ID.
+      // Pre-scan col A: blacklist any 7-prefix 6-digit value appearing in >50% of rows.
+      // Uses the same pattern as extractTransferId so only genuine candidates are counted.
       const colAFreq: Record<string, number> = {};
       let colADataRows = 0;
       for (let i = siafiHeaderRowIdx + 1; i < rowsSiafi.length; i++) {
         const r = rowsSiafi[i];
         if (!r || r.length === 0) continue;
         const raw = String(r[0] ?? "").replace(/\D/g, "");
-        if (raw.length >= 6 && raw.length <= 7) {
+        if (raw.length === 6 && raw[0] === '7') {
           colAFreq[raw] = (colAFreq[raw] || 0) + 1;
           colADataRows++;
         }
@@ -405,9 +453,10 @@ export default function App() {
         const row = rowsSiafi[i];
         if (!row || row.length === 0) continue;
 
-        // SKILL §2.1 + §2.2: Only accept 7xxxxx IDs, reject UG codes and 570000
+        // Constraint ①: ID = 7xxxxx exactly (enforced by extractTransferId regex)
+        // Constraint ②: blacklist blocks any 7xxxxx value that repeats in >50% of rows
         let idSiafi = extractTransferId(row[0]);
-        if (idSiafi && (ugCodeBlacklist.has(idSiafi) || idSiafi === '570000')) idSiafi = null;
+        if (idSiafi && ugCodeBlacklist.has(idSiafi)) idSiafi = null;
         if (idSiafi) {
            lastIdSiafi = idSiafi;
         } else {
@@ -418,13 +467,15 @@ export default function App() {
         // FIX-2 (Vuln 6): Collect ALL non-zero accounts — no silent truncation.
         // If multiple accounts have balances, the system flags the row for human review
         // rather than silently picking the first one.
+        // SKILL §6: Use accountMap for full literal names; fallback to raw header only if unknown
         const detectedAccounts: { code: string; display: string }[] = [];
         for (const ac of accountCols) {
           const val = row[ac.idx];
           if (val !== undefined && val !== null && val !== "") {
             const strVal = String(val).trim();
             if (strVal !== "-" && strVal !== "0" && strVal !== "0,00" && strVal !== "0.00") {
-              const acName = accountNames[ac.code] || ac.headerName;
+              // SKILL §E: Formatação → [Código] - [Nome do Dicionário]
+              const acName = accountMap[ac.code] || ac.headerName;
               detectedAccounts.push({ code: ac.code, display: `${ac.code} - ${acName}` });
             }
           }
@@ -436,17 +487,18 @@ export default function App() {
             ? "Sem Saldo no SIAFI"
             : detectedAccounts.map(a => a.display).join(' | ');
 
-        // SKILL §2.3: Col L (idx 11) Convenente — carry-forward obrigatório (NUNCA 'SEM INFORMAÇÃO')
-        const rawConvenente = String(row[11] ?? "").trim();
-        const isConvenenteBlank = !rawConvenente || rawConvenente === "0";
-        if (!isConvenenteBlank) lastConvenenteSiafi = rawConvenente;
-        const convenenteSiafi = !isConvenenteBlank ? rawConvenente : lastConvenenteSiafi;
+        // Convenente — detected column with carry-forward; rejects numeric (balance) values
+        const convRaw = String(row[convenentColSiafiIdx !== -1 ? convenentColSiafiIdx : 11] ?? "").trim();
+        const isConvenenteBlank = !convRaw || convRaw === "0" || /^\d[\d.,\s]*$/.test(convRaw);
+        if (!isConvenenteBlank) lastConvenenteSiafi = convRaw;
+        const convenenteSiafi = !isConvenenteBlank ? convRaw : lastConvenenteSiafi;
 
-        // SKILL §2.3: Col K (idx 10) CNPJ — carry-forward obrigatório
-        const rawCnpj = String(row[10] ?? "").trim();
-        const isCnpjBlank = !rawCnpj || rawCnpj === "0" || !/\d/.test(rawCnpj);
-        if (!isCnpjBlank) lastCnpjSiafi = rawCnpj;
-        const cnpjSiafi = !isCnpjBlank ? rawCnpj : lastCnpjSiafi;
+        // CNPJ — detected column with carry-forward; validates 14-digit CNPJ format
+        const cnpjRaw = String(row[cnpjColSiafiIdx !== -1 ? cnpjColSiafiIdx : 10] ?? "").trim();
+        const cnpjDigits = cnpjRaw.replace(/\D/g, "");
+        const isCnpjBlank = !cnpjRaw || cnpjRaw === "0" || cnpjDigits.length < 11 || cnpjDigits.length > 14;
+        if (!isCnpjBlank) lastCnpjSiafi = cnpjRaw;
+        const cnpjSiafi = !isCnpjBlank ? cnpjRaw : lastCnpjSiafi;
 
         // SKILL §3: Col D (idx 3) Situação Contábil — carry-forward
         const rawSituacaoContabil = String(row[3] ?? "").trim();
@@ -465,8 +517,8 @@ export default function App() {
         // Prefer the header-detected status text; fall back to col P fixed position.
         if (tgMap.has(idSiafi) && !tgMap.get(idSiafi)!.ambiguous) {
           const tgEntry = tgMap.get(idSiafi)!;
-          // Col P (idx 15) is the authoritative raw TG status; header-detected status is fallback only
-          situacaoRawTg = String(tgEntry.fullRow[15] ?? "").trim() || tgEntry.status;
+          // Header-detected status is authoritative; col P (idx 15) as fallback only
+          situacaoRawTg = tgEntry.status || String(tgEntry.fullRow[15] ?? "").trim();
         }
 
         if (detectedAccounts.length > 1) {
@@ -602,15 +654,31 @@ export default function App() {
     setIsProcessing(false);
   };
 
+  // SKILL §3 — Exportação com esquema fixo A-F (Validação de Colunas)
+  // A: ID (6 dígitos)  B: Convenente  C: CNPJ  D: Situação Transferegov
+  // E: Situação SIAFI (nomes por extenso do accountMap)  F: Status (Conciliação)
+  // Carry-forward de CNPJ/Convenente garantido pelos campos r.cnpjSiafi / r.convenenteSiafi.
   const exportResults = () => {
-    const dataToExport = results.map(r => ({
-      "Nº Transferência":              r.idSiafi,
-      "Convenente (SIAFI Col L)":      r.convenenteSiafi || r.convenenteNome,
-      "CNPJ (SIAFI Col K)":            r.cnpjSiafi,
-      "Situação Transferegov (TG Col P)": r.situacaoRawTg,
-      "Situação SIAFI (SIAFI Col D)":  r.situacaoSiafiDisplay,
-      "Status Conciliação":            r.statusConciliacao,
-    }));
+    const dataToExport = filteredResults.map(r => {
+      // Coluna E: se há múltiplas contas, o display já está concatenado com ' | '
+      // Garantir que cada segmento use o nome do accountMap (já aplicado na construção)
+      const situacaoSiafi = r.situacaoSiafiDisplay;
+
+      return {
+        // A — ID do Instrumento (6 dígitos, início 7)
+        "ID": r.idSiafi,
+        // B — Convenente com carry-forward (nunca vazio)
+        "Convenente": r.convenenteSiafi || r.convenenteNome || "",
+        // C — CNPJ com carry-forward (nunca vazio)
+        "CNPJ": r.cnpjSiafi || "",
+        // D — Situação Transferegov (Col P do arquivo TG)
+        "Situação Transferegov": r.situacaoRawTg,
+        // E — Situação SIAFI: [Código] - [Nome] com separador ' | ' para múltiplas contas
+        "Situação SIAFI": situacaoSiafi,
+        // F — Status da Conciliação
+        "Status (Conciliação)": r.statusConciliacao,
+      };
+    });
     const ws = XLSX.utils.json_to_sheet(dataToExport);
     const wb = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(wb, ws, "Conciliação");
@@ -824,9 +892,55 @@ export default function App() {
           <div className="results-header">
             <h2>Resultados da Auditoria ({stats.total} linhas)</h2>
             <button className="btn-primary" style={{ width: 'auto', marginBottom: 0 }} onClick={exportResults}>
-              <Download size={18} /> Exportar Excel Completo
+              <Download size={18} /> Exportar Excel ({filteredResults.length} linhas)
             </button>
           </div>
+
+          {/* ── Filtros ── */}
+          <div style={{ display: 'flex', gap: '0.75rem', margin: '0.75rem 0', flexWrap: 'wrap' }}>
+            <input
+              type="text"
+              placeholder="Nº Instrumento (ex: 712345)"
+              value={filterNrInstrumento}
+              onChange={e => setFilterNrInstrumento(e.target.value)}
+              style={{ flex: '1 1 160px', minWidth: 140, padding: '0.45rem 0.75rem', border: '1px solid #cbd5e1', borderRadius: 8, fontSize: '0.82rem', outline: 'none' }}
+            />
+            <input
+              type="text"
+              placeholder="Situação SIAFI (ex: Aprovado)"
+              value={filterSituacaoSiafi}
+              onChange={e => setFilterSituacaoSiafi(e.target.value)}
+              style={{ flex: '2 1 200px', minWidth: 180, padding: '0.45rem 0.75rem', border: '1px solid #cbd5e1', borderRadius: 8, fontSize: '0.82rem', outline: 'none' }}
+            />
+            <select
+              value={filterStatus}
+              onChange={e => setFilterStatus(e.target.value)}
+              style={{ flex: '1 1 180px', minWidth: 160, padding: '0.45rem 0.75rem', border: '1px solid #cbd5e1', borderRadius: 8, fontSize: '0.82rem', background: '#fff', outline: 'none' }}
+            >
+              <option value="">Todos os Status</option>
+              <option value="Correto">Correto</option>
+              <option value="Inconsistência">Inconsistência</option>
+              <option value="Sem Registro no Transferegov">Sem Registro no Transferegov</option>
+              <option value="Múltiplas Contas - Revisar">Múltiplas Contas - Revisar</option>
+              <option value="Regra Pendente - Revisar">Regra Pendente - Revisar</option>
+              <option value="Sem Saldo no SIAFI">Sem Saldo no SIAFI</option>
+              <option value="Revisão Manual - ID Ambíguo">Revisão Manual - ID Ambíguo</option>
+              <option value="Status Não Mapeado">Status Não Mapeado</option>
+            </select>
+            {(filterNrInstrumento || filterSituacaoSiafi || filterStatus) && (
+              <button
+                onClick={() => { setFilterNrInstrumento(''); setFilterSituacaoSiafi(''); setFilterStatus(''); }}
+                style={{ padding: '0.45rem 0.9rem', border: '1px solid #e2e8f0', borderRadius: 8, fontSize: '0.82rem', background: '#f8fafc', cursor: 'pointer', color: '#64748b' }}
+              >
+                Limpar filtros
+              </button>
+            )}
+          </div>
+
+          {/* ── Contador ── */}
+          <p style={{ fontSize: '0.78rem', color: '#64748b', margin: '0 0 0.5rem', fontWeight: 500 }}>
+            Exibindo {new Set(filteredResults.map(r => r.idSiafi)).size} de {new Set(results.map(r => r.idSiafi)).size} instrumentos encontrados
+          </p>
 
           <div className="stats-grid stats-grid-5">
             <div className="stat-card">
@@ -855,24 +969,36 @@ export default function App() {
             <table>
               <thead>
                 <tr>
-                  <th>Nº Transferência</th>
-                  <th>Convenente</th>
-                  <th>Situação (Transferegov)</th>
-                  <th>Situação (SIAFI)</th>
-                  <th>Status Conciliação</th>
+                  <th>ID (A)</th>
+                  <th>Convenente (B)</th>
+                  <th>CNPJ (C)</th>
+                  <th>Situação Transferegov (D)</th>
+                  <th>Situação SIAFI (E)</th>
+                  <th>Status Conciliação (F)</th>
                 </tr>
               </thead>
               <tbody>
-                {results.slice(0, 100).map((row, idx) => (
+                {filteredResults.slice(0, 100).map((row, idx) => (
                   <tr key={idx}>
+                    {/* A — ID */}
                     <td>{row.idSiafi}</td>
-                    <td title={row.convenenteNome}>
-                      {row.convenenteNome.length > 30 ? row.convenenteNome.substring(0, 30) + "..." : row.convenenteNome}
+                    {/* B — Convenente (carry-forward) */}
+                    <td title={row.convenenteSiafi || row.convenenteNome}>
+                      {(row.convenenteSiafi || row.convenenteNome || '').length > 28
+                        ? (row.convenenteSiafi || row.convenenteNome).substring(0, 28) + '…'
+                        : (row.convenenteSiafi || row.convenenteNome)}
                     </td>
-                    <td>{row.situacaoTg}</td>
+                    {/* C — CNPJ (carry-forward) */}
+                    <td>{row.cnpjSiafi || '—'}</td>
+                    {/* D — Situação Transferegov */}
+                    <td>{row.situacaoRawTg}</td>
+                    {/* E — Situação SIAFI (nomes por extenso do accountMap) */}
                     <td title={row.situacaoSiafiDisplay}>
-                      {row.situacaoSiafiDisplay.length > 40 ? row.situacaoSiafiDisplay.substring(0, 40) + "..." : row.situacaoSiafiDisplay}
+                      {row.situacaoSiafiDisplay.length > 45
+                        ? row.situacaoSiafiDisplay.substring(0, 45) + '…'
+                        : row.situacaoSiafiDisplay}
                     </td>
+                    {/* F — Status Conciliação */}
                     <td>
                       <span className={`status-badge ${getStatusBadgeClass(row.statusConciliacao)}`}>
                         {getStatusIcon(row.statusConciliacao)}
@@ -883,9 +1009,9 @@ export default function App() {
                 ))}
               </tbody>
             </table>
-            {results.length > 100 && (
+            {filteredResults.length > 100 && (
               <p style={{ textAlign: 'center', marginTop: '1rem', color: 'var(--text-muted)' }}>
-                Mostrando as primeiras 100 linhas. Exporte para Excel para ver a planilha SIAFI completa com a conciliação.
+                Mostrando as primeiras 100 linhas de {filteredResults.length}. Use o botão Exportar para obter o conjunto completo filtrado.
               </p>
             )}
           </div>
