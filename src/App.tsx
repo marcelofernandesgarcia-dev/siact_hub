@@ -31,7 +31,9 @@ const validationRules: Record<string, string[]> = {
   // Celebração
   "Proposta de Plano de Trabalho Aprovado":        ["712210101"],
   // Execução — aceita múltiplas contas simultâneas (saldo a liberar + executado + a repassar)
-  "Em execução":                                   ["811210100", "812210101", "812210201", "811210103"],
+  // 812210202 incluída para instrumentos OBTV onde recursos já foram liberados ao convenente
+  // (A COMPROVAR ativo no SIAFI enquanto TG ainda registra "Em execução" — estado transitório normal)
+  "Em execução":                                   ["811210100", "812210101", "812210201", "812210202", "811210103"],
   // Aguardando P.C. — foco na obrigação de comprovar o recurso recebido
   "Aguardando prestação de contas":                ["812210202", "811210102"],
   // P.C. em Análise — transição entre entrega dos documentos e o parecer técnico
@@ -117,11 +119,13 @@ const NON_ID_HEADER_KEYWORDS = [
   "acao", "ação", "orgao", "órgão", "ugestora",
 ];
 
-// SKILL §2.1: ID must be exactly 6 digits starting with 7 (700000–799999)
+// SKILL §2.1: ID must be exactly 6 digits starting with 7, 8, or 9
+// Instruments 700xxx–999xxx are valid Transferegov IDs; codes starting with
+// 1–6 are UG/SIORG/IBGE codes and are excluded by the blacklist mechanism.
 const extractTransferId = (val: string | number | undefined): string | null => {
   if (!val) return null;
   const str = String(val).trim();
-  const match = str.match(/(?:^|\D)(7\d{5})(?:\D|$)/);
+  const match = str.match(/(?:^|\D)([789]\d{5})(?:\D|$)/);
   return match ? match[1] : null;
 };
 
@@ -491,7 +495,7 @@ export default function App() {
         const r = rowsSiafi[i];
         if (!r || r.length === 0) continue;
         const raw = String(r[0] ?? "").replace(/\D/g, "");
-        if (raw.length === 6 && raw[0] === '7') {
+        if (raw.length === 6 && /[789]/.test(raw[0])) {
           colAFreq[raw] = (colAFreq[raw] || 0) + 1;
           colADataRows++;
         }
