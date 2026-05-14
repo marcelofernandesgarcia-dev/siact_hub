@@ -45,7 +45,7 @@ const validationRules: Record<string, string[]> = {
   "Convenio Rescindido":                           ["811210109"],
   "Inadimplente":                                  ["812210106"],
   "Prestação de Contas Aprovada":                  ["812210104"],
-  "Prestação de Contas Aprovada com Ressalvas":    [],
+  "Prestação de Contas Aprovada com Ressalvas":    ["812210104"],
   "Prestação de Contas Comprovada em Análise":     ["812210103", "812210105", "812210107"],
   "Prestação de Contas Concluída":                 ["812210111", "811210110"],
   "Prestação de Contas Iniciada por Antecipação":  [],
@@ -64,6 +64,7 @@ const accountMap: Record<string, string> = {
   '812210101': 'Convênios e instrumentos a Liberar',
   '812210103': 'Convênios e Instrumentos Congêneres a Aprovar',
   '812210106': 'Convênios e instrumentos Congêneres em Inadimplência Efetiva',
+  '812210107': 'Convênios e Instrumentos Congêneres em Inadimplência Suspensa',
   '812210108': 'Convênios e Instrumentos Congêneres Cancelados',
   '812210109': 'Convênios e Instrumentos Congêneres Não Liberado/ Devolvido',
   '812210111': 'Convênios e Instrumentos Congêneres Concluídos',
@@ -72,10 +73,14 @@ const accountMap: Record<string, string> = {
   '712210101': 'Valores Firmados',
 };
 
-// Eventos que indicam conclusão definitiva do instrumento (maior prioridade na resolução de ciclo de vida)
+// Contas dedicadas a instrumentos concluídos — conclusão só é válida quando o evento aparece NESTAS contas
+const CONCLUSAO_ACCOUNTS = new Set(['812210111', '811210110']);
+// Eventos de conclusão definitiva do instrumento (válidos apenas em CONCLUSAO_ACCOUNTS)
 const CONCLUSAO_EVENTS = new Set(['581674', '581338', '580674', '581087']);
-// Eventos que indicam remoção de inadimplência (conta 812210106 torna-se histórica)
+// Eventos que indicam remoção de inadimplência efetiva (conta 812210106 torna-se histórica)
 const REMOCAO_INAD_EVENTS = new Set(['580742', '581742']);
+// Eventos de remoção/estorno de inadimplência suspensa (conta 812210107 torna-se histórica)
+const SUSP_INAD_EVENTS = new Set(['580711', '585709']);
 // Eventos de estorno (reversão contábil) que indicam anulação processada em 812210101
 const ESTORNO_EVENTS = new Set(['585716', '586700']);
 
@@ -604,21 +609,35 @@ export default function App() {
             situacaoTg = tgData.status;
             if (tgData.convenente && tgData.convenente !== "-") convenenteNome = tgData.convenente;
 
-            // Resolução por prioridade de evento: conclusão > remoção de inadimplência > estorno > lógica padrão
+            // Resolução por prioridade de evento: conclusão (conta-específica) > inad. efetiva/suspensa > estorno > padrão
             const allEventos = detectedAccounts.flatMap(a => a.eventos);
-            const hasConclusao = allEventos.some(e => CONCLUSAO_EVENTS.has(e));
-            const hasRemocaoInad = !hasConclusao && allEventos.some(e => REMOCAO_INAD_EVENTS.has(e));
+            // Conclusão só é válida quando o evento aparece em conta dedicada (812210111 ou 811210110)
+            const hasConclusao = detectedAccounts.some(a =>
+              CONCLUSAO_ACCOUNTS.has(a.code) && a.eventos.some(e => CONCLUSAO_EVENTS.has(e))
+            );
+            const hasRemocaoInad = !hasConclusao && detectedAccounts.some(a =>
+              a.code === '812210106' && a.eventos.some(e => REMOCAO_INAD_EVENTS.has(e))
+            );
+            const hasRemocaoSuspInad = !hasConclusao && detectedAccounts.some(a =>
+              a.code === '812210107' && a.eventos.some(e => SUSP_INAD_EVENTS.has(e))
+            );
             const hasEstorno = allEventos.some(e => ESTORNO_EVENTS.has(e));
             const isInstrumentoAnulado = normalizeStatusKey(situacaoTg) === normalizeStatusKey("Instrumento Anulado");
 
             // Contas efetivas para validação após filtragem de histórico de ciclo de vida
             let accountsForValidation = detectedAccounts;
             if (hasConclusao) {
-              accountsForValidation = detectedAccounts.filter(a => a.eventos.some(e => CONCLUSAO_EVENTS.has(e)));
-            } else if (hasRemocaoInad) {
+              // Manter apenas contas de conclusão com evento de conclusão; demais são histórico
               accountsForValidation = detectedAccounts.filter(a =>
-                !(a.code === '812210106' && a.eventos.some(e => REMOCAO_INAD_EVENTS.has(e)))
+                CONCLUSAO_ACCOUNTS.has(a.code) && a.eventos.some(e => CONCLUSAO_EVENTS.has(e))
               );
+            } else if (hasRemocaoInad || hasRemocaoSuspInad) {
+              // Remover contas de inadimplência cujos eventos registram encerramento
+              accountsForValidation = detectedAccounts.filter(a => {
+                if (a.code === '812210106' && a.eventos.some(e => REMOCAO_INAD_EVENTS.has(e))) return false;
+                if (a.code === '812210107' && a.eventos.some(e => SUSP_INAD_EVENTS.has(e))) return false;
+                return true;
+              });
             }
 
             if (detectedAccounts.length === 0) {
@@ -666,19 +685,32 @@ export default function App() {
         let motivo = "";
         if (statusConciliacao === "Correto") {
           const allEv = detectedAccounts.flatMap(a => a.eventos);
-          const hasConclusaoMotivo = allEv.some(e => CONCLUSAO_EVENTS.has(e));
-          const hasRemocaoMotivo = !hasConclusaoMotivo && allEv.some(e => REMOCAO_INAD_EVENTS.has(e));
+          const hasConclusaoMotivo = detectedAccounts.some(a =>
+            CONCLUSAO_ACCOUNTS.has(a.code) && a.eventos.some(e => CONCLUSAO_EVENTS.has(e))
+          );
+          const hasRemocaoMotivo = !hasConclusaoMotivo && detectedAccounts.some(a =>
+            a.code === '812210106' && a.eventos.some(e => REMOCAO_INAD_EVENTS.has(e))
+          );
+          const hasRemocaoSuspMotivo = !hasConclusaoMotivo && detectedAccounts.some(a =>
+            a.code === '812210107' && a.eventos.some(e => SUSP_INAD_EVENTS.has(e))
+          );
           const hasEstornoMotivo = allEv.some(e => ESTORNO_EVENTS.has(e));
           const isAnuladoMotivo = normalizeStatusKey(situacaoTg) === normalizeStatusKey("Instrumento Anulado");
           if (hasConclusaoMotivo) {
-            const evConc = [...new Set(allEv.filter(e => CONCLUSAO_EVENTS.has(e)))];
-            const historico = detectedAccounts.length - detectedAccounts.filter(a => a.eventos.some(e => CONCLUSAO_EVENTS.has(e))).length;
+            const evConc = [...new Set(detectedAccounts.filter(a => CONCLUSAO_ACCOUNTS.has(a.code)).flatMap(a => a.eventos).filter(e => CONCLUSAO_EVENTS.has(e)))];
+            const historico = detectedAccounts.length - detectedAccounts.filter(a => CONCLUSAO_ACCOUNTS.has(a.code) && a.eventos.some(e => CONCLUSAO_EVENTS.has(e))).length;
             motivo = historico > 0
               ? `OK — Conclusão confirmada (ev. ${evConc.join(", ")}). ${historico} conta(s) histórica(s) de ciclo de vida desconsiderada(s).`
               : `OK — Conclusão confirmada por evento SIAFI (ev. ${evConc.join(", ")}).`;
+          } else if (hasRemocaoMotivo && hasRemocaoSuspMotivo) {
+            const evRem = [...new Set([...allEv.filter(e => REMOCAO_INAD_EVENTS.has(e)), ...allEv.filter(e => SUSP_INAD_EVENTS.has(e))])];
+            motivo = `OK — Inadimplência efetiva e suspensa encerradas (ev. ${evRem.join(", ")}); contas 812210106 e 812210107 tratadas como históricas.`;
           } else if (hasRemocaoMotivo) {
             const evRem = [...new Set(allEv.filter(e => REMOCAO_INAD_EVENTS.has(e)))];
-            motivo = `OK — Inadimplência encerrada (ev. ${evRem.join(", ")}); conta 812210106 tratada como histórica.`;
+            motivo = `OK — Inadimplência efetiva encerrada (ev. ${evRem.join(", ")}); conta 812210106 tratada como histórica.`;
+          } else if (hasRemocaoSuspMotivo) {
+            const evRem = [...new Set(allEv.filter(e => SUSP_INAD_EVENTS.has(e)))];
+            motivo = `OK — Inadimplência suspensa encerrada (ev. ${evRem.join(", ")}); conta 812210107 tratada como histórica.`;
           } else if (hasEstornoMotivo && isAnuladoMotivo) {
             const evEst = [...new Set(allEv.filter(e => ESTORNO_EVENTS.has(e)))];
             motivo = `OK — Anulação contabilmente processada. Estornos registrados (ev. ${evEst.join(", ")}); conta 812210101 encerrada sem saldo ativo.`;
