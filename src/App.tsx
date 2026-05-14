@@ -46,7 +46,7 @@ const validationRules: Record<string, string[]> = {
   "Prestação de Contas Aprovada":                  ["812210104"],
   "Prestação de Contas Aprovada com Ressalvas":    [],
   "Prestação de Contas Comprovada em Análise":     ["812210103", "812210105", "812210107"],
-  "Prestação de Contas Concluída":                 ["812210211", "811210110"],
+  "Prestação de Contas Concluída":                 ["812210111", "811210110"],
   "Prestação de Contas Iniciada por Antecipação":  [],
   "Prestação de Contas Rejeitada":                 ["812210106"],
 };
@@ -65,10 +65,16 @@ const accountMap: Record<string, string> = {
   '812210106': 'Convênios e instrumentos Congêneres em Inadimplência Efetiva',
   '812210108': 'Convênios e Instrumentos Congêneres Cancelados',
   '812210109': 'Convênios e Instrumentos Congêneres Não Liberado/ Devolvido',
+  '812210111': 'Convênios e Instrumentos Congêneres Concluídos',
   '812210201': 'A repassar',
   '812210202': 'A Comprovar',
   '712210101': 'Valores Firmados',
 };
+
+// Eventos que indicam conclusão definitiva do instrumento (maior prioridade na resolução de ciclo de vida)
+const CONCLUSAO_EVENTS = new Set(['581674', '581338', '580674', '581087']);
+// Eventos que indicam remoção de inadimplência (conta 812210106 torna-se histórica)
+const REMOCAO_INAD_EVENTS = new Set(['580742', '581742']);
 
 const normalizeText = (text: string) => {
   if (!text) return "";
@@ -595,8 +601,26 @@ export default function App() {
             situacaoTg = tgData.status;
             if (tgData.convenente && tgData.convenente !== "-") convenenteNome = tgData.convenente;
 
+            // Resolução por prioridade de evento: conclusão > remoção de inadimplência > lógica padrão
+            const allEventos = detectedAccounts.flatMap(a => a.eventos);
+            const hasConclusao = allEventos.some(e => CONCLUSAO_EVENTS.has(e));
+            const hasRemocaoInad = !hasConclusao && allEventos.some(e => REMOCAO_INAD_EVENTS.has(e));
+
+            // Contas efetivas para validação após filtragem de histórico de ciclo de vida
+            let accountsForValidation = detectedAccounts;
+            if (hasConclusao) {
+              accountsForValidation = detectedAccounts.filter(a => a.eventos.some(e => CONCLUSAO_EVENTS.has(e)));
+            } else if (hasRemocaoInad) {
+              accountsForValidation = detectedAccounts.filter(a =>
+                !(a.code === '812210106' && a.eventos.some(e => REMOCAO_INAD_EVENTS.has(e)))
+              );
+            }
+
             if (detectedAccounts.length === 0) {
               statusConciliacao = "Sem Saldo no SIAFI";
+              if (!confirmedCorrectIds.has(idSiafi)) alertas++;
+            } else if (hasConclusao && normalizeStatusKey(situacaoTg) !== normalizeStatusKey("Prestação de Contas Concluída")) {
+              statusConciliacao = "Atenção — Conclusão SIAFI sem encerramento no TG";
               if (!confirmedCorrectIds.has(idSiafi)) alertas++;
             } else {
               const matchedRuleKey = Object.keys(validationRules).find(
@@ -611,7 +635,7 @@ export default function App() {
                   statusConciliacao = "Regra Pendente - Revisar";
                   if (!confirmedCorrectIds.has(idSiafi)) alertas++;
                 } else {
-                  contasForaDoConjunto = detectedAccounts
+                  contasForaDoConjunto = accountsForValidation
                     .filter(a => !validSet.includes(a.code))
                     .map(a => a.display);
                   if (contasForaDoConjunto.length === 0) {
@@ -633,10 +657,27 @@ export default function App() {
 
         let motivo = "";
         if (statusConciliacao === "Correto") {
-          const nContas = detectedAccounts.length;
-          motivo = nContas > 1
-            ? `OK — ${nContas} contas dentro do conjunto válido (Rito Ordinário): ${situacaoSiafiDisplay}`
-            : "OK";
+          const allEv = detectedAccounts.flatMap(a => a.eventos);
+          const hasConclusaoMotivo = allEv.some(e => CONCLUSAO_EVENTS.has(e));
+          const hasRemocaoMotivo = !hasConclusaoMotivo && allEv.some(e => REMOCAO_INAD_EVENTS.has(e));
+          if (hasConclusaoMotivo) {
+            const evConc = [...new Set(allEv.filter(e => CONCLUSAO_EVENTS.has(e)))];
+            const historico = detectedAccounts.length - detectedAccounts.filter(a => a.eventos.some(e => CONCLUSAO_EVENTS.has(e))).length;
+            motivo = historico > 0
+              ? `OK — Conclusão confirmada (ev. ${evConc.join(", ")}). ${historico} conta(s) histórica(s) de ciclo de vida desconsiderada(s).`
+              : `OK — Conclusão confirmada por evento SIAFI (ev. ${evConc.join(", ")}).`;
+          } else if (hasRemocaoMotivo) {
+            const evRem = [...new Set(allEv.filter(e => REMOCAO_INAD_EVENTS.has(e)))];
+            motivo = `OK — Inadimplência encerrada (ev. ${evRem.join(", ")}); conta 812210106 tratada como histórica.`;
+          } else {
+            const nContas = detectedAccounts.length;
+            motivo = nContas > 1
+              ? `OK — ${nContas} contas dentro do conjunto válido (Rito Ordinário): ${situacaoSiafiDisplay}`
+              : "OK";
+          }
+        } else if (statusConciliacao === "Atenção — Conclusão SIAFI sem encerramento no TG") {
+          const evConc = [...new Set(detectedAccounts.flatMap(a => a.eventos).filter(e => CONCLUSAO_EVENTS.has(e)))];
+          motivo = `SIAFI registra conclusão (ev. ${evConc.join(", ")}) mas TG indica '${situacaoTg}'. Verificar atualização no Transferegov.`;
         } else if (statusConciliacao === "Inconsistência (Rito Patológico)") {
           motivo = `Conta(s) fora do conjunto válido para '${situacaoTg}': ${contasForaDoConjunto.join(" | ")}`;
         } else if (statusConciliacao === "Revisão Manual - ID Ambíguo") {
@@ -712,7 +753,8 @@ export default function App() {
     if (status === 'Correto') return 'status-correct';
     if (status === 'Sem Registro no Transferegov') return 'status-not-found';
     if (['Regra Pendente - Revisar', 'Sem Saldo no SIAFI',
-         'Revisão Manual - ID Ambíguo', 'Status Não Mapeado'].includes(status)) return 'status-alert';
+         'Revisão Manual - ID Ambíguo', 'Status Não Mapeado',
+         'Atenção — Conclusão SIAFI sem encerramento no TG'].includes(status)) return 'status-alert';
     return 'status-incorrect'; // Inconsistência (Rito Patológico) e outros
   };
 
@@ -721,7 +763,8 @@ export default function App() {
     if (status === 'Correto') return <CheckCircle size={14} style={style} />;
     if (['Regra Pendente - Revisar', 'Sem Saldo no SIAFI',
          'Revisão Manual - ID Ambíguo', 'Status Não Mapeado',
-         'Sem Registro no Transferegov'].includes(status)) return <AlertCircle size={14} style={style} />;
+         'Sem Registro no Transferegov',
+         'Atenção — Conclusão SIAFI sem encerramento no TG'].includes(status)) return <AlertCircle size={14} style={style} />;
     return <XCircle size={14} style={style} />; // Inconsistência (Rito Patológico)
   };
 
@@ -949,6 +992,7 @@ export default function App() {
               <option value="Sem Saldo no SIAFI">⚠️ Sem Saldo no SIAFI</option>
               <option value="Revisão Manual - ID Ambíguo">🔀 Revisão Manual - ID Ambíguo</option>
               <option value="Status Não Mapeado">❓ Status Não Mapeado</option>
+              <option value="Atenção — Conclusão SIAFI sem encerramento no TG">⚠️ Conclusão SIAFI sem encerramento no TG</option>
             </select>
             {(filterNrInstrumento || filterSituacaoSiafi || filterStatus) && (
               <button
