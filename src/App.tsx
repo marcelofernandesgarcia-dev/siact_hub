@@ -1,6 +1,6 @@
 import { useState, useMemo, Component, type ReactNode } from 'react';
 import * as XLSX from 'xlsx';
-import { UploadCloud, CheckCircle, XCircle, AlertCircle, Play, Download, BarChart2, PieChart, ShieldCheck, TrendingUp } from 'lucide-react';
+import { UploadCloud, CheckCircle, XCircle, AlertCircle, Play, Download, BarChart2, PieChart, ShieldCheck, TrendingUp, Info, X, Settings, Shield } from 'lucide-react';
 import './index.css';
 
 // FIX-1 (Vuln 5): Expand merged cell ranges in-place before parsing.
@@ -184,8 +184,10 @@ export default function App() {
     total: 0, corretos: 0, inconsistencias: 0, naoEncontrados: 0, alertas: 0,
   });
   const [filterNrInstrumento, setFilterNrInstrumento] = useState('');
-  const [filterSituacaoSiafi, setFilterSituacaoSiafi] = useState('');
+  const [filterSituacaoTg, setFilterSituacaoTg] = useState('');
+  const [filterContaSiafi, setFilterContaSiafi] = useState('');
   const [filterStatus, setFilterStatus] = useState('');
+  const [modalOpen, setModalOpen] = useState<'guide' | 'compliance' | null>(null);
 
   const dashboard = useMemo(() => {
     if (results.length === 0) return null;
@@ -248,16 +250,42 @@ export default function App() {
              singleEntry, multipleEntry };
   }, [results]);
 
+  const uniqueTgSituacoes = useMemo(() => {
+    const set = new Set<string>();
+    for (const r of results) {
+      if (r.situacaoRawTg) set.add(r.situacaoRawTg);
+    }
+    return [...set].sort();
+  }, [results]);
+
+  const uniqueContasSiafi = useMemo(() => {
+    const set = new Set<string>();
+    for (const r of results) {
+      const parts = (r.situacaoSiafiDisplay || '').split(' | ');
+      for (const p of parts) {
+        const m = p.match(/^(\d{9})/);
+        if (m) {
+          const code = m[1];
+          set.add(`${code} - ${accountMap[code] || code}`);
+        }
+      }
+    }
+    return [...set].sort();
+  }, [results]);
+
   const filteredResults = useMemo(() => {
     const idTrim = filterNrInstrumento.trim();
-    const siafTrim = filterSituacaoSiafi.trim().toLowerCase();
     return results.filter(r => {
       if (idTrim && !String(r.idSiafi ?? '').includes(idTrim)) return false;
-      if (siafTrim && !String(r.situacaoSiafiDisplay ?? '').toLowerCase().includes(siafTrim)) return false;
+      if (filterSituacaoTg && r.situacaoRawTg !== filterSituacaoTg) return false;
+      if (filterContaSiafi) {
+        const code = filterContaSiafi.split(' - ')[0];
+        if (!String(r.situacaoSiafiDisplay ?? '').includes(code)) return false;
+      }
       if (filterStatus && r.statusConciliacao !== filterStatus) return false;
       return true;
     });
-  }, [results, filterNrInstrumento, filterSituacaoSiafi, filterStatus]);
+  }, [results, filterNrInstrumento, filterSituacaoTg, filterContaSiafi, filterStatus]);
 
   const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>, type: 'transferegov' | 'siafi') => {
     const file = e.target.files?.[0];
@@ -834,7 +862,14 @@ export default function App() {
       </div>
 
       <div className="upload-grid">
-        <div className={`upload-card ${fileTransferegov ? 'loaded' : ''}`}>
+        <div className={`upload-card ${fileTransferegov ? 'loaded' : ''}`} style={{ position: 'relative' }}>
+          <button
+            onClick={e => { e.stopPropagation(); setModalOpen('guide'); }}
+            title="Guia de Operação e Metas"
+            style={{ position: 'absolute', top: 10, right: 10, background: 'none', border: 'none', cursor: 'pointer', color: '#60a5fa', zIndex: 2, padding: 4, borderRadius: 6, display: 'flex', alignItems: 'center' }}
+          >
+            <Info size={18} />
+          </button>
           <input
             type="file"
             className="file-input"
@@ -846,7 +881,14 @@ export default function App() {
           <p>{fileTransferegov ? fileTransferegov.name : "Clique ou arraste para selecionar"}</p>
         </div>
 
-        <div className={`upload-card ${fileSiafi ? 'loaded' : ''}`}>
+        <div className={`upload-card ${fileSiafi ? 'loaded' : ''}`} style={{ position: 'relative' }}>
+          <button
+            onClick={e => { e.stopPropagation(); setModalOpen('compliance'); }}
+            title="Conformidade e Avaliação Digital"
+            style={{ position: 'absolute', top: 10, right: 10, background: 'none', border: 'none', cursor: 'pointer', color: '#60a5fa', zIndex: 2, padding: 4, borderRadius: 6, display: 'flex', alignItems: 'center' }}
+          >
+            <Info size={18} />
+          </button>
           <input
             type="file"
             className="file-input"
@@ -1024,18 +1066,31 @@ export default function App() {
           <div style={{ display: 'flex', gap: '0.75rem', margin: '0.75rem 0', flexWrap: 'wrap' }}>
             <input
               type="text"
-              placeholder="Nº Instrumento (ex: 712345)"
+              placeholder="Nº Instrumento"
               value={filterNrInstrumento}
               onChange={e => setFilterNrInstrumento(e.target.value)}
-              style={{ flex: '1 1 160px', minWidth: 140, padding: '0.45rem 0.75rem', border: '1px solid #cbd5e1', borderRadius: 8, fontSize: '0.82rem', outline: 'none' }}
+              style={{ flex: '0 1 160px', minWidth: 130, padding: '0.45rem 0.75rem', border: '1px solid #cbd5e1', borderRadius: 8, fontSize: '0.82rem', outline: 'none' }}
             />
-            <input
-              type="text"
-              placeholder="Situação SIAFI (ex: Aprovado)"
-              value={filterSituacaoSiafi}
-              onChange={e => setFilterSituacaoSiafi(e.target.value)}
-              style={{ flex: '2 1 200px', minWidth: 180, padding: '0.45rem 0.75rem', border: '1px solid #cbd5e1', borderRadius: 8, fontSize: '0.82rem', outline: 'none' }}
-            />
+            <select
+              value={filterSituacaoTg}
+              onChange={e => setFilterSituacaoTg(e.target.value)}
+              style={{ flex: '1 1 200px', minWidth: 180, padding: '0.45rem 0.75rem', border: '1px solid #cbd5e1', borderRadius: 8, fontSize: '0.82rem', background: '#fff', outline: 'none' }}
+            >
+              <option value="">Todas as Situações (Transferegov)</option>
+              {uniqueTgSituacoes.map(s => (
+                <option key={s} value={s}>{s}</option>
+              ))}
+            </select>
+            <select
+              value={filterContaSiafi}
+              onChange={e => setFilterContaSiafi(e.target.value)}
+              style={{ flex: '1 1 220px', minWidth: 200, padding: '0.45rem 0.75rem', border: '1px solid #cbd5e1', borderRadius: 8, fontSize: '0.82rem', background: '#fff', outline: 'none' }}
+            >
+              <option value="">Todas as Contas (SIAFI)</option>
+              {uniqueContasSiafi.map(s => (
+                <option key={s} value={s}>{s}</option>
+              ))}
+            </select>
             <select
               value={filterStatus}
               onChange={e => setFilterStatus(e.target.value)}
@@ -1052,9 +1107,9 @@ export default function App() {
               <option value="Atenção — Conclusão SIAFI sem encerramento no TG">⚠️ Conclusão SIAFI sem encerramento no TG</option>
               <option value="Atenção — Anulação sem estorno contábil no SIAFI">⚠️ Anulação sem estorno contábil no SIAFI</option>
             </select>
-            {(filterNrInstrumento || filterSituacaoSiafi || filterStatus) && (
+            {(filterNrInstrumento || filterSituacaoTg || filterContaSiafi || filterStatus) && (
               <button
-                onClick={() => { setFilterNrInstrumento(''); setFilterSituacaoSiafi(''); setFilterStatus(''); }}
+                onClick={() => { setFilterNrInstrumento(''); setFilterSituacaoTg(''); setFilterContaSiafi(''); setFilterStatus(''); }}
                 style={{ padding: '0.45rem 0.9rem', border: '1px solid #e2e8f0', borderRadius: 8, fontSize: '0.82rem', background: '#f8fafc', cursor: 'pointer', color: '#64748b' }}
               >
                 Limpar filtros
@@ -1145,6 +1200,108 @@ export default function App() {
         </div>
       )}
     </div>
+
+    {/* ── Modais Informativos ── */}
+    {modalOpen && (
+      <div
+        onClick={() => setModalOpen(null)}
+        style={{
+          position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.65)', zIndex: 1000,
+          display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '1.5rem',
+        }}
+      >
+        <div
+          onClick={e => e.stopPropagation()}
+          style={{
+            background: '#1e293b', borderRadius: 14, maxWidth: 580, width: '100%',
+            boxShadow: '0 20px 60px rgba(0,0,0,0.5)', border: '1px solid #334155',
+            fontFamily: 'Arial, sans-serif',
+          }}
+        >
+          {/* Header */}
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '1.25rem 1.5rem', borderBottom: '1px solid #334155' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
+              {modalOpen === 'guide'
+                ? <Settings size={20} color="#60a5fa" />
+                : <Shield size={20} color="#34d399" />
+              }
+              <span style={{ fontWeight: 700, fontSize: '1rem', color: '#f1f5f9' }}>
+                {modalOpen === 'guide' ? 'Guia de Operação e Metas' : 'Conformidade e Avaliação Digital'}
+              </span>
+            </div>
+            <button
+              onClick={() => setModalOpen(null)}
+              style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#94a3b8', display: 'flex', alignItems: 'center', padding: 4, borderRadius: 6 }}
+            >
+              <X size={20} />
+            </button>
+          </div>
+
+          {/* Body */}
+          <div style={{ padding: '1.5rem', color: '#cbd5e1', fontSize: '0.875rem', lineHeight: 1.7 }}>
+            {modalOpen === 'guide' ? (
+              <>
+                <p style={{ color: '#94a3b8', marginBottom: '1.25rem' }}>
+                  O SIACT Hub é uma ferramenta de auditoria digital projetada para a conciliação automatizada entre as bases de dados Transferegov e SIAFI (Tesouro Gerencial).
+                </p>
+                <p style={{ fontWeight: 700, color: '#e2e8f0', marginBottom: '0.5rem' }}>Funcionalidades</p>
+                <ul style={{ margin: '0 0 1.25rem 1.1rem', padding: 0 }}>
+                  <li>Cruzamento de dados estruturados em tempo real.</li>
+                  <li>Identificação automática de divergências de situação contábil.</li>
+                  <li>Aplicação de hierarquia de eventos SIAFI (5 níveis de prioridade).</li>
+                  <li>Geração de relatórios de conformidade em Excel.</li>
+                </ul>
+                <p style={{ fontWeight: 700, color: '#e2e8f0', marginBottom: '0.5rem' }}>Metas de Desempenho</p>
+                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.75rem', marginBottom: '1.25rem' }}>
+                  {[
+                    { label: 'Redução do tempo de conciliação manual', value: '80%' },
+                    { label: 'Acurácia no processamento de registros vinculados', value: '100%' },
+                  ].map(m => (
+                    <div key={m.label} style={{ background: '#0f172a', borderRadius: 10, padding: '0.75rem 1rem', border: '1px solid #334155' }}>
+                      <div style={{ fontSize: '1.5rem', fontWeight: 800, color: '#60a5fa' }}>{m.value}</div>
+                      <div style={{ fontSize: '0.75rem', color: '#64748b', marginTop: 2 }}>{m.label}</div>
+                    </div>
+                  ))}
+                </div>
+                <p style={{ color: '#94a3b8', fontSize: '0.82rem' }}>
+                  <strong style={{ color: '#e2e8f0' }}>Conclusão esperada:</strong> Otimizar a fiscalização financeira e garantir a integridade dos dados auditados pelo MTur.
+                </p>
+              </>
+            ) : (
+              <>
+                <p style={{ color: '#94a3b8', marginBottom: '1.25rem' }}>
+                  Este sistema foi desenvolvido em estrita observância aos pilares da Estratégia de Governo Digital (SGD/MGI).
+                </p>
+                <p style={{ fontWeight: 700, color: '#e2e8f0', marginBottom: '0.75rem' }}>Diretrizes da Secretaria de Governo Digital</p>
+                {[
+                  { icon: '🔗', title: 'Interoperabilidade', desc: 'Comunicação transparente entre Transferegov e SIAFI, sem duplicidade de esforços.' },
+                  { icon: '🔒', title: 'Segurança da Informação', desc: 'Processamento 100% client-side — nenhum dado é transmitido para servidores externos.' },
+                  { icon: '📋', title: 'Transparência Ativa', desc: 'Estruturação de dados que facilita a prestação de contas e o controle social.' },
+                ].map(item => (
+                  <div key={item.title} style={{ display: 'flex', gap: '0.75rem', marginBottom: '0.9rem', alignItems: 'flex-start' }}>
+                    <span style={{ fontSize: '1.1rem', marginTop: 1 }}>{item.icon}</span>
+                    <div>
+                      <div style={{ fontWeight: 700, color: '#e2e8f0', fontSize: '0.85rem' }}>{item.title}</div>
+                      <div style={{ color: '#94a3b8', fontSize: '0.8rem' }}>{item.desc}</div>
+                    </div>
+                  </div>
+                ))}
+                <div style={{ marginTop: '1.25rem', background: '#0f172a', borderRadius: 10, padding: '0.85rem 1rem', border: '1px solid #334155' }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginBottom: '0.4rem' }}>
+                    <ShieldCheck size={14} color="#34d399" />
+                    <span style={{ fontWeight: 700, fontSize: '0.82rem', color: '#34d399' }}>Avaliação AIE — Risco Baixo</span>
+                  </div>
+                  <p style={{ fontSize: '0.78rem', color: '#64748b', margin: 0 }}>
+                    O sistema atende aos critérios da Portaria SGD/MGI nº 473/2026, com supervisão humana obrigatória em todas as decisões e processamento efêmero sem armazenamento de dados.
+                  </p>
+                </div>
+              </>
+            )}
+          </div>
+        </div>
+      </div>
+    )}
+
     </ErrorBoundary>
   );
 }
