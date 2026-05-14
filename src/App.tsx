@@ -41,6 +41,7 @@ const validationRules: Record<string, string[]> = {
   // Demais estágios
   "Cancelado":                                     ["812210108", "811210106"],
   "Convênio Anulado":                              ["812210109"],
+  "Instrumento Anulado":                           ["812210101", "812210109"],
   "Convenio Rescindido":                           ["811210109"],
   "Inadimplente":                                  ["812210106"],
   "Prestação de Contas Aprovada":                  ["812210104"],
@@ -75,6 +76,8 @@ const accountMap: Record<string, string> = {
 const CONCLUSAO_EVENTS = new Set(['581674', '581338', '580674', '581087']);
 // Eventos que indicam remoção de inadimplência (conta 812210106 torna-se histórica)
 const REMOCAO_INAD_EVENTS = new Set(['580742', '581742']);
+// Eventos de estorno (reversão contábil) que indicam anulação processada em 812210101
+const ESTORNO_EVENTS = new Set(['585716', '586700']);
 
 const normalizeText = (text: string) => {
   if (!text) return "";
@@ -601,10 +604,12 @@ export default function App() {
             situacaoTg = tgData.status;
             if (tgData.convenente && tgData.convenente !== "-") convenenteNome = tgData.convenente;
 
-            // Resolução por prioridade de evento: conclusão > remoção de inadimplência > lógica padrão
+            // Resolução por prioridade de evento: conclusão > remoção de inadimplência > estorno > lógica padrão
             const allEventos = detectedAccounts.flatMap(a => a.eventos);
             const hasConclusao = allEventos.some(e => CONCLUSAO_EVENTS.has(e));
             const hasRemocaoInad = !hasConclusao && allEventos.some(e => REMOCAO_INAD_EVENTS.has(e));
+            const hasEstorno = allEventos.some(e => ESTORNO_EVENTS.has(e));
+            const isInstrumentoAnulado = normalizeStatusKey(situacaoTg) === normalizeStatusKey("Instrumento Anulado");
 
             // Contas efetivas para validação após filtragem de histórico de ciclo de vida
             let accountsForValidation = detectedAccounts;
@@ -621,6 +626,9 @@ export default function App() {
               if (!confirmedCorrectIds.has(idSiafi)) alertas++;
             } else if (hasConclusao && normalizeStatusKey(situacaoTg) !== normalizeStatusKey("Prestação de Contas Concluída")) {
               statusConciliacao = "Atenção — Conclusão SIAFI sem encerramento no TG";
+              if (!confirmedCorrectIds.has(idSiafi)) alertas++;
+            } else if (isInstrumentoAnulado && detectedAccounts.some(a => a.code === '812210101') && !hasEstorno) {
+              statusConciliacao = "Atenção — Anulação sem estorno contábil no SIAFI";
               if (!confirmedCorrectIds.has(idSiafi)) alertas++;
             } else {
               const matchedRuleKey = Object.keys(validationRules).find(
@@ -660,6 +668,8 @@ export default function App() {
           const allEv = detectedAccounts.flatMap(a => a.eventos);
           const hasConclusaoMotivo = allEv.some(e => CONCLUSAO_EVENTS.has(e));
           const hasRemocaoMotivo = !hasConclusaoMotivo && allEv.some(e => REMOCAO_INAD_EVENTS.has(e));
+          const hasEstornoMotivo = allEv.some(e => ESTORNO_EVENTS.has(e));
+          const isAnuladoMotivo = normalizeStatusKey(situacaoTg) === normalizeStatusKey("Instrumento Anulado");
           if (hasConclusaoMotivo) {
             const evConc = [...new Set(allEv.filter(e => CONCLUSAO_EVENTS.has(e)))];
             const historico = detectedAccounts.length - detectedAccounts.filter(a => a.eventos.some(e => CONCLUSAO_EVENTS.has(e))).length;
@@ -669,12 +679,17 @@ export default function App() {
           } else if (hasRemocaoMotivo) {
             const evRem = [...new Set(allEv.filter(e => REMOCAO_INAD_EVENTS.has(e)))];
             motivo = `OK — Inadimplência encerrada (ev. ${evRem.join(", ")}); conta 812210106 tratada como histórica.`;
+          } else if (hasEstornoMotivo && isAnuladoMotivo) {
+            const evEst = [...new Set(allEv.filter(e => ESTORNO_EVENTS.has(e)))];
+            motivo = `OK — Anulação contabilmente processada. Estornos registrados (ev. ${evEst.join(", ")}); conta 812210101 encerrada sem saldo ativo.`;
           } else {
             const nContas = detectedAccounts.length;
             motivo = nContas > 1
               ? `OK — ${nContas} contas dentro do conjunto válido (Rito Ordinário): ${situacaoSiafiDisplay}`
               : "OK";
           }
+        } else if (statusConciliacao === "Atenção — Anulação sem estorno contábil no SIAFI") {
+          motivo = `Instrumento anulado no TG mas conta 812210101 (A Liberar) permanece ativa no SIAFI sem eventos de estorno (${[...ESTORNO_EVENTS].join(", ")}). Verificar lançamento de estorno contábil.`;
         } else if (statusConciliacao === "Atenção — Conclusão SIAFI sem encerramento no TG") {
           const evConc = [...new Set(detectedAccounts.flatMap(a => a.eventos).filter(e => CONCLUSAO_EVENTS.has(e)))];
           motivo = `SIAFI registra conclusão (ev. ${evConc.join(", ")}) mas TG indica '${situacaoTg}'. Verificar atualização no Transferegov.`;
@@ -754,7 +769,8 @@ export default function App() {
     if (status === 'Sem Registro no Transferegov') return 'status-not-found';
     if (['Regra Pendente - Revisar', 'Sem Saldo no SIAFI',
          'Revisão Manual - ID Ambíguo', 'Status Não Mapeado',
-         'Atenção — Conclusão SIAFI sem encerramento no TG'].includes(status)) return 'status-alert';
+         'Atenção — Conclusão SIAFI sem encerramento no TG',
+         'Atenção — Anulação sem estorno contábil no SIAFI'].includes(status)) return 'status-alert';
     return 'status-incorrect'; // Inconsistência (Rito Patológico) e outros
   };
 
@@ -764,7 +780,8 @@ export default function App() {
     if (['Regra Pendente - Revisar', 'Sem Saldo no SIAFI',
          'Revisão Manual - ID Ambíguo', 'Status Não Mapeado',
          'Sem Registro no Transferegov',
-         'Atenção — Conclusão SIAFI sem encerramento no TG'].includes(status)) return <AlertCircle size={14} style={style} />;
+         'Atenção — Conclusão SIAFI sem encerramento no TG',
+         'Atenção — Anulação sem estorno contábil no SIAFI'].includes(status)) return <AlertCircle size={14} style={style} />;
     return <XCircle size={14} style={style} />; // Inconsistência (Rito Patológico)
   };
 
@@ -993,6 +1010,7 @@ export default function App() {
               <option value="Revisão Manual - ID Ambíguo">🔀 Revisão Manual - ID Ambíguo</option>
               <option value="Status Não Mapeado">❓ Status Não Mapeado</option>
               <option value="Atenção — Conclusão SIAFI sem encerramento no TG">⚠️ Conclusão SIAFI sem encerramento no TG</option>
+              <option value="Atenção — Anulação sem estorno contábil no SIAFI">⚠️ Anulação sem estorno contábil no SIAFI</option>
             </select>
             {(filterNrInstrumento || filterSituacaoSiafi || filterStatus) && (
               <button
