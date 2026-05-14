@@ -35,7 +35,7 @@ const validationRules: Record<string, string[]> = {
   // Aguardando P.C. — foco na obrigação de comprovar o recurso recebido
   "Aguardando prestação de contas":                ["812210202", "811210102"],
   // P.C. em Análise — transição entre entrega dos documentos e o parecer técnico
-  "Prestação de Contas em Análise":                ["812210103", "812210202", "811210102"],
+  "Prestação de Contas em Análise":                ["812210103", "812210104", "812210202", "811210102"],
   // P.C. em Complementação — aguardando saneamento de dúvidas técnicas
   "Prestação de Contas em Complementação":         ["812210103"],
   // Demais estágios
