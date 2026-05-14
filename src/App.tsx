@@ -35,7 +35,9 @@ const validationRules: Record<string, string[]> = {
   // Aguardando P.C. — foco na obrigação de comprovar o recurso recebido
   "Aguardando prestação de contas":                ["812210202", "811210102"],
   // P.C. em Análise — transição entre entrega dos documentos e o parecer técnico
-  "Prestação de Contas em Análise":                ["812210103", "812210104", "812210202", "811210102"],
+  // 812210101 e 812210102 são rastros históricos do ciclo (firmamento + aguardando PC)
+  // presentes no export TG com saldo zero mas histórico de movimentação (ex: 823645)
+  "Prestação de Contas em Análise":                ["812210101", "812210102", "812210103", "812210104", "812210202", "811210102"],
   // P.C. em Complementação — aguardando saneamento de dúvidas técnicas
   "Prestação de Contas em Complementação":         ["812210103"],
   // Demais estágios
@@ -62,7 +64,9 @@ const accountMap: Record<string, string> = {
   '811210109': 'Convênios e Instrumentos Congêneres a Anular',
   '811210110': 'Convênios e Instrumentos Congêneres Arquivados',
   '812210101': 'Convênios e instrumentos a Liberar',
+  '812210102': 'Convênios e Instrumentos Congêneres a Comprovar',
   '812210103': 'Convênios e Instrumentos Congêneres a Aprovar',
+  '812210104': 'Convênios e Instrumentos Congêneres Aprovados',
   '812210106': 'Convênios e instrumentos Congêneres em Inadimplência Efetiva',
   '812210107': 'Convênios e Instrumentos Congêneres em Inadimplência Suspensa',
   '812210108': 'Convênios e Instrumentos Congêneres Cancelados',
