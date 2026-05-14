@@ -1,6 +1,6 @@
 import { useState, useMemo, Component, type ReactNode } from 'react';
 import * as XLSX from 'xlsx';
-import { UploadCloud, CheckCircle, XCircle, AlertCircle, Play, Download, BarChart2, PieChart, ShieldCheck, TrendingUp, Info, X, Settings, Shield } from 'lucide-react';
+import { UploadCloud, CheckCircle, XCircle, AlertCircle, Play, Download, BarChart2, PieChart, ShieldCheck, TrendingUp, X, Settings, Shield } from 'lucide-react';
 import './index.css';
 
 // FIX-1 (Vuln 5): Expand merged cell ranges in-place before parsing.
@@ -202,10 +202,12 @@ export default function App() {
       if (!tgFreq[st]) tgFreq[st] = new Set();
       tgFreq[st].add(r.idSiafi);
       uniqueIds.add(r.idSiafi);
-      const m = String(r.situacaoSiafiDisplay || "").match(/^(\d{9})/);
-      if (m) {
-        if (!accUniqueIds[m[1]]) accUniqueIds[m[1]] = new Set();
-        accUniqueIds[m[1]].add(r.idSiafi);
+      for (const part of String(r.situacaoSiafiDisplay || "").split(' | ')) {
+        const m = part.match(/^(\d{9})/);
+        if (m) {
+          if (!accUniqueIds[m[1]]) accUniqueIds[m[1]] = new Set();
+          accUniqueIds[m[1]].add(r.idSiafi);
+        }
       }
     }
     const accCounts: Record<string, number> = {};
@@ -218,20 +220,19 @@ export default function App() {
       .sort((a, b) => b[1] - a[1]).slice(0, 8);
     const tgMax = tgEntries[0]?.[1] || 1;
 
-    const donutSlices = CRITICAL_ACCS
-      .map(a => ({ ...a, n: accCounts[a.code] || 0 }))
-      .filter(a => a.n > 0);
-    const donutTotal = donutSlices.reduce((s, a) => s + a.n, 0) || 1;
+    const BI_PALETTE = ['#3b82f6','#10b981','#f59e0b','#8b5cf6','#ef4444','#06b6d4','#f97316','#84cc16','#ec4899','#6366f1'];
+    const allAccEntries = Object.entries(accCounts)
+      .map(([code, n]) => ({ code, n, fullLabel: accountMap[code] || code }))
+      .sort((a, b) => b.n - a.n)
+      .map((d, i) => ({ ...d, color: BI_PALETTE[i % BI_PALETTE.length] }));
+    const allAccTotal = allAccEntries.reduce((s, a) => s + a.n, 0) || 1;
+    const accMax = allAccEntries[0]?.n || 1;
 
     const C = 2 * Math.PI * 50;
     let off = 0;
-    const segments = donutSlices.map(d => {
-      const frac = d.n / donutTotal;
-      const seg = {
-        ...d,
-        dasharray: `${(frac * C).toFixed(2)} ${C.toFixed(2)}`,
-        dashoffset: -(off * C),
-      };
+    const allSegments = allAccEntries.map(d => {
+      const frac = d.n / allAccTotal;
+      const seg = { ...d, dasharray: `${(frac * C).toFixed(2)} ${C.toFixed(2)}`, dashoffset: -(off * C) };
       off += frac;
       return seg;
     });
@@ -245,7 +246,7 @@ export default function App() {
     const singleEntry   = entryVals.filter(n => n === 1).length;
     const multipleEntry = entryVals.filter(n => n > 1).length;
 
-    return { tgEntries, tgMax, segments, donutSlices, donutTotal,
+    return { tgEntries, tgMax, allSegments, allAccEntries, allAccTotal, accMax,
              uniqueInstruments: uniqueIds.size, totalEntries: results.length,
              singleEntry, multipleEntry };
   }, [results]);
@@ -861,15 +862,34 @@ export default function App() {
         <p>Auditor Digital MTur — Conciliação Transferegov × SIAFI (Tesouro Gerencial)</p>
       </div>
 
+      {/* ── Botões de Informação ── */}
+      <div style={{ display: 'flex', justifyContent: 'space-between', gap: '1rem', marginBottom: '0.75rem' }}>
+        <button
+          onClick={() => setModalOpen('guide')}
+          style={{
+            display: 'flex', alignItems: 'center', gap: '0.5rem',
+            padding: '0.5rem 1.1rem', borderRadius: 8, border: '1px solid #334155',
+            background: '#1e293b', color: '#60a5fa', cursor: 'pointer',
+            fontSize: '0.82rem', fontWeight: 600,
+          }}
+        >
+          <Settings size={15} /> Guia de Operação e Metas
+        </button>
+        <button
+          onClick={() => setModalOpen('compliance')}
+          style={{
+            display: 'flex', alignItems: 'center', gap: '0.5rem',
+            padding: '0.5rem 1.1rem', borderRadius: 8, border: '1px solid #334155',
+            background: '#1e293b', color: '#34d399', cursor: 'pointer',
+            fontSize: '0.82rem', fontWeight: 600,
+          }}
+        >
+          <Shield size={15} /> Conformidade e Avaliação Digital
+        </button>
+      </div>
+
       <div className="upload-grid">
-        <div className={`upload-card ${fileTransferegov ? 'loaded' : ''}`} style={{ position: 'relative' }}>
-          <button
-            onClick={e => { e.stopPropagation(); setModalOpen('guide'); }}
-            title="Guia de Operação e Metas"
-            style={{ position: 'absolute', top: 10, right: 10, background: 'none', border: 'none', cursor: 'pointer', color: '#60a5fa', zIndex: 2, padding: 4, borderRadius: 6, display: 'flex', alignItems: 'center' }}
-          >
-            <Info size={18} />
-          </button>
+        <div className={`upload-card ${fileTransferegov ? 'loaded' : ''}`}>
           <input
             type="file"
             className="file-input"
@@ -881,14 +901,7 @@ export default function App() {
           <p>{fileTransferegov ? fileTransferegov.name : "Clique ou arraste para selecionar"}</p>
         </div>
 
-        <div className={`upload-card ${fileSiafi ? 'loaded' : ''}`} style={{ position: 'relative' }}>
-          <button
-            onClick={e => { e.stopPropagation(); setModalOpen('compliance'); }}
-            title="Conformidade e Avaliação Digital"
-            style={{ position: 'absolute', top: 10, right: 10, background: 'none', border: 'none', cursor: 'pointer', color: '#60a5fa', zIndex: 2, padding: 4, borderRadius: 6, display: 'flex', alignItems: 'center' }}
-          >
-            <Info size={18} />
-          </button>
+        <div className={`upload-card ${fileSiafi ? 'loaded' : ''}`}>
           <input
             type="file"
             className="file-input"
@@ -936,45 +949,74 @@ export default function App() {
             ))}
           </div>
 
-          {/* ── Card 2: SIAFI — donut das contas críticas ── */}
+          {/* ── Card 2: SIAFI — Distribuição de Contas (BI) ── */}
           <div className="stat-card" style={{ padding: '1.25rem', display: 'flex', flexDirection: 'column', alignItems: 'flex-start' }}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginBottom: '1rem' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginBottom: '0.75rem' }}>
               <PieChart size={16} color="#8b5cf6" />
               <span style={{ fontWeight: 700, fontSize: '0.82rem', color: '#1e293b' }}>
-                SIAFI — Contas Críticas
+                SIAFI — Distribuição de Contas
               </span>
             </div>
+
+            {/* KPI chips */}
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3,1fr)', gap: '0.4rem', width: '100%', marginBottom: '0.85rem' }}>
+              {[
+                { label: 'Instrumentos', val: dashboard.uniqueInstruments },
+                { label: 'Contas SIAFI', val: dashboard.allAccEntries.length },
+                { label: 'Média Contas', val: (dashboard.allAccTotal / Math.max(dashboard.uniqueInstruments, 1)).toFixed(1) },
+              ].map(k => (
+                <div key={k.label} style={{ background: '#f8fafc', borderRadius: 8, padding: '0.4rem 0.5rem', textAlign: 'center' }}>
+                  <div style={{ fontSize: '1rem', fontWeight: 800, color: '#1e293b', lineHeight: 1.2 }}>{k.val}</div>
+                  <div style={{ fontSize: '0.6rem', color: '#64748b', marginTop: 2 }}>{k.label}</div>
+                </div>
+              ))}
+            </div>
+
+            {/* Donut */}
             <div style={{ display: 'flex', justifyContent: 'center', width: '100%', marginBottom: '0.75rem' }}>
-              <svg width="130" height="130" viewBox="0 0 130 130">
-                {dashboard.segments.length > 0
-                  ? dashboard.segments.map((seg, i) => (
+              <svg width="120" height="120" viewBox="0 0 130 130">
+                {dashboard.allSegments.length > 0
+                  ? dashboard.allSegments.map((seg, i) => (
                       <circle key={i} cx="65" cy="65" r="50"
-                        fill="none" stroke={seg.color} strokeWidth="20"
+                        fill="none" stroke={seg.color} strokeWidth="18"
                         strokeDasharray={seg.dasharray}
                         strokeDashoffset={seg.dashoffset}
                         transform="rotate(-90 65 65)"
                       />
                     ))
-                  : <circle cx="65" cy="65" r="50" fill="none" stroke="#e2e8f0" strokeWidth="20" />
+                  : <circle cx="65" cy="65" r="50" fill="none" stroke="#e2e8f0" strokeWidth="18" />
                 }
-                <text x="65" y="61" textAnchor="middle" fontSize="15" fontWeight="800" fill="#1e293b">
-                  {dashboard.donutTotal}
+                <text x="65" y="61" textAnchor="middle" fontSize="14" fontWeight="800" fill="#1e293b">
+                  {dashboard.allAccTotal}
                 </text>
-                <text x="65" y="75" textAnchor="middle" fontSize="9" fill="#64748b">lançamentos</text>
+                <text x="65" y="75" textAnchor="middle" fontSize="8.5" fill="#64748b">lançamentos</text>
               </svg>
             </div>
-            <div style={{ display: 'flex', flexDirection: 'column', gap: '0.3rem', width: '100%' }}>
-              {dashboard.donutSlices.map(d => (
-                <div key={d.code} style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.7rem', alignItems: 'center' }}>
-                  <span style={{ display: 'flex', alignItems: 'center', gap: '0.35rem', color: '#475569' }}>
-                    <span style={{ width: 9, height: 9, borderRadius: '50%', background: d.color, display: 'inline-block', flexShrink: 0 }} />
-                    {d.label}
-                  </span>
-                  <span style={{ fontWeight: 700, color: '#1e293b' }}>
-                    {d.n}&nbsp;<span style={{ fontWeight: 400, color: '#94a3b8' }}>({((d.n / dashboard.donutTotal) * 100).toFixed(1)}%)</span>
-                  </span>
-                </div>
-              ))}
+
+            {/* Barras horizontais por conta */}
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '0.45rem', width: '100%' }}>
+              {dashboard.allAccEntries.map(d => {
+                const short = d.fullLabel
+                  .replace(/^Convênios e [Ii]nstrumentos [Cc]ongêneres\s+/i, '')
+                  .replace(/^Convênios e instrumentos\s+/i, '');
+                const pct = ((d.n / dashboard.allAccTotal) * 100).toFixed(1);
+                return (
+                  <div key={d.code}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.68rem', marginBottom: 2 }}>
+                      <span style={{ display: 'flex', alignItems: 'center', gap: '0.3rem', color: '#475569', maxWidth: '72%', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                        <span style={{ width: 8, height: 8, borderRadius: '50%', background: d.color, display: 'inline-block', flexShrink: 0 }} />
+                        {short}
+                      </span>
+                      <span style={{ fontWeight: 700, color: '#1e293b', flexShrink: 0 }}>
+                        {d.n} <span style={{ fontWeight: 400, color: '#94a3b8' }}>({pct}%)</span>
+                      </span>
+                    </div>
+                    <div style={{ background: '#e2e8f0', borderRadius: 3, height: 5 }}>
+                      <div style={{ width: `${Math.round((d.n / dashboard.accMax) * 100)}%`, background: d.color, height: 5, borderRadius: 3 }} />
+                    </div>
+                  </div>
+                );
+              })}
             </div>
           </div>
 
