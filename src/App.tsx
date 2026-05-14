@@ -237,18 +237,8 @@ export default function App() {
       return seg;
     });
 
-    // Count accounting entries per unique instrument ID
-    const entriesPerIdMap = new Map<string, number>();
-    for (const r of results) {
-      entriesPerIdMap.set(r.idSiafi, (entriesPerIdMap.get(r.idSiafi) || 0) + 1);
-    }
-    const entryVals = [...entriesPerIdMap.values()];
-    const singleEntry   = entryVals.filter(n => n === 1).length;
-    const multipleEntry = entryVals.filter(n => n > 1).length;
-
     return { tgEntries, tgMax, allSegments, allAccEntries, allAccTotal, accMax,
-             uniqueInstruments: uniqueIds.size, totalEntries: results.length,
-             singleEntry, multipleEntry };
+             uniqueInstruments: uniqueIds.size, totalEntries: results.length };
   }, [results]);
 
   const uniqueTgSituacoes = useMemo(() => {
@@ -289,6 +279,35 @@ export default function App() {
       return true;
     });
   }, [results, filterNrInstrumento, filterSituacaoTg, filterContaSiafi, filterStatus]);
+
+  const filteredStats = useMemo(() => {
+    const seen = new Set<string>();
+    let corretos = 0, inconsistencias = 0, naoEncontrados = 0, alertas = 0;
+    for (const r of filteredResults) {
+      if (seen.has(r.idSiafi)) continue;
+      seen.add(r.idSiafi);
+      if (r.statusConciliacao === 'Correto') corretos++;
+      else if (r.statusConciliacao === 'Inconsistência (Rito Patológico)') inconsistencias++;
+      else if (r.statusConciliacao === 'Sem Registro no Transferegov') naoEncontrados++;
+      else alertas++;
+    }
+    const total = seen.size;
+    const items = [
+      { label: 'Corretos',              val: corretos,         color: '#10b981' },
+      { label: 'Inconsistências',       val: inconsistencias,  color: '#ef4444' },
+      { label: 'Alertas — Revisar',     val: alertas,          color: '#f97316' },
+      { label: 'Sem Ref. Transferegov', val: naoEncontrados,   color: '#f59e0b' },
+    ];
+    const C = 2 * Math.PI * 52;
+    let off = 0;
+    const segments = items.filter(d => d.val > 0).map(d => {
+      const frac = d.val / (total || 1);
+      const seg = { ...d, dasharray: `${(frac * C).toFixed(2)} ${C.toFixed(2)}`, dashoffset: -(off * C) };
+      off += frac;
+      return seg;
+    });
+    return { corretos, inconsistencias, naoEncontrados, alertas, total, items, segments };
+  }, [filteredResults]);
 
   const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>, type: 'transferegov' | 'siafi') => {
     const file = e.target.files?.[0];
@@ -1022,75 +1041,64 @@ export default function App() {
             </div>
           </div>
 
-          {/* ── Card 3: Integridade dos Dados ── */}
+          {/* ── Card 3: Resultado da Auditoria — reage a filtros ── */}
           <div className="stat-card" style={{ padding: '1.25rem', display: 'flex', flexDirection: 'column', alignItems: 'flex-start' }}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginBottom: '1rem' }}>
-              <ShieldCheck size={16} color="#10b981" />
-              <span style={{ fontWeight: 700, fontSize: '0.82rem', color: '#1e293b' }}>
-                Integridade dos Dados
-              </span>
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', width: '100%', marginBottom: '0.75rem' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                <TrendingUp size={16} color="#10b981" />
+                <span style={{ fontWeight: 700, fontSize: '0.82rem', color: '#1e293b' }}>Resultado da Auditoria</span>
+              </div>
+              {(filterNrInstrumento || filterSituacaoTg || filterContaSiafi || filterStatus) && (
+                <span style={{ fontSize: '0.63rem', fontWeight: 700, color: '#3b82f6', background: '#eff6ff', border: '1px solid #bfdbfe', borderRadius: 99, padding: '2px 8px' }}>
+                  Filtrado
+                </span>
+              )}
             </div>
-            <div style={{ display: 'flex', flexDirection: 'column', gap: '0.9rem', width: '100%' }}>
 
-              {/* Counters row */}
-              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.5rem' }}>
-                <div style={{ background: '#f8fafc', borderRadius: 8, padding: '0.6rem' }}>
-                  <div style={{ fontSize: '0.62rem', color: '#64748b', marginBottom: 2 }}>Instrumentos Únicos</div>
-                  <div style={{ fontSize: '1.6rem', fontWeight: 800, color: '#1e293b', lineHeight: 1 }}>
-                    {dashboard.uniqueInstruments}
-                  </div>
-                </div>
-                <div style={{ background: '#f8fafc', borderRadius: 8, padding: '0.6rem' }}>
-                  <div style={{ fontSize: '0.62rem', color: '#64748b', marginBottom: 2 }}>Lançamentos (SIAFI)</div>
-                  <div style={{ fontSize: '1.6rem', fontWeight: 800, color: '#1e293b', lineHeight: 1 }}>
-                    {dashboard.totalEntries}
-                  </div>
-                </div>
-              </div>
+            {/* Donut de destaque */}
+            <div style={{ display: 'flex', justifyContent: 'center', width: '100%', marginBottom: '0.8rem' }}>
+              <svg width="150" height="150" viewBox="0 0 150 150">
+                {filteredStats.segments.length > 0
+                  ? filteredStats.segments.map((seg, i) => (
+                      <circle key={i} cx="75" cy="75" r="52"
+                        fill="none" stroke={seg.color} strokeWidth="22"
+                        strokeDasharray={seg.dasharray}
+                        strokeDashoffset={seg.dashoffset}
+                        transform="rotate(-90 75 75)"
+                      />
+                    ))
+                  : <circle cx="75" cy="75" r="52" fill="none" stroke="#e2e8f0" strokeWidth="22" />
+                }
+                <text x="75" y="68" textAnchor="middle" fontSize="20" fontWeight="900" fill="#10b981">
+                  {filteredStats.total > 0 ? `${Math.round((filteredStats.corretos / filteredStats.total) * 100)}%` : '—'}
+                </text>
+                <text x="75" y="83" textAnchor="middle" fontSize="9" fill="#64748b">Correto</text>
+                <text x="75" y="96" textAnchor="middle" fontSize="9" fontWeight="700" fill="#94a3b8">
+                  {filteredStats.total} instrumentos
+                </text>
+              </svg>
+            </div>
 
-              {/* Complexity bar chart: 1 entry vs multiple */}
-              <div style={{ width: '100%' }}>
-                <div style={{ fontSize: '0.68rem', fontWeight: 700, color: '#475569', marginBottom: '0.55rem', textTransform: 'uppercase', letterSpacing: '0.04em' }}>
-                  Complexidade por Instrumento
-                </div>
-                <div style={{ marginBottom: '0.45rem' }}>
+            {/* Barras por categoria */}
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem', width: '100%' }}>
+              {filteredStats.items.map(d => (
+                <div key={d.label}>
                   <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.7rem', marginBottom: 2 }}>
-                    <span style={{ color: '#475569' }}>Simples (1 lançamento)</span>
-                    <span style={{ fontWeight: 700, color: '#15803d' }}>{dashboard.singleEntry}</span>
-                  </div>
-                  <div style={{ background: '#e2e8f0', borderRadius: 3, height: 6 }}>
-                    <div style={{ width: `${dashboard.uniqueInstruments ? Math.round((dashboard.singleEntry / dashboard.uniqueInstruments) * 100) : 0}%`, background: '#10b981', height: 6, borderRadius: 3 }} />
-                  </div>
-                </div>
-                <div>
-                  <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.7rem', marginBottom: 2 }}>
-                    <span style={{ color: '#475569' }}>Complexos (2+ lançamentos)</span>
-                    <span style={{ fontWeight: 700, color: '#f97316' }}>{dashboard.multipleEntry}</span>
-                  </div>
-                  <div style={{ background: '#e2e8f0', borderRadius: 3, height: 6 }}>
-                    <div style={{ width: `${dashboard.uniqueInstruments ? Math.round((dashboard.multipleEntry / dashboard.uniqueInstruments) * 100) : 0}%`, background: '#f97316', height: 6, borderRadius: 3 }} />
-                  </div>
-                </div>
-              </div>
-
-              {/* Inflation signal */}
-              {dashboard.multipleEntry > 0 ? (
-                <div style={{ background: '#fff7ed', border: '1px solid #fed7aa', borderRadius: 8, padding: '0.65rem' }}>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: '0.35rem', marginBottom: '0.2rem' }}>
-                    <TrendingUp size={11} color="#f97316" />
-                    <span style={{ fontSize: '0.68rem', fontWeight: 700, color: '#f97316' }}>
-                      {dashboard.multipleEntry} instrumento{dashboard.multipleEntry > 1 ? 's' : ''} com múltiplos lançamentos
+                    <span style={{ display: 'flex', alignItems: 'center', gap: '0.35rem', color: '#475569' }}>
+                      <span style={{ width: 8, height: 8, borderRadius: '50%', background: d.color, display: 'inline-block', flexShrink: 0 }} />
+                      {d.label}
+                    </span>
+                    <span style={{ fontWeight: 700, color: '#1e293b' }}>
+                      {d.val}&nbsp;<span style={{ fontWeight: 400, color: '#94a3b8' }}>
+                        ({filteredStats.total > 0 ? ((d.val / filteredStats.total) * 100).toFixed(1) : '0.0'}%)
+                      </span>
                     </span>
                   </div>
-                  <span style={{ fontSize: '0.65rem', color: '#9a3412' }}>
-                    +{dashboard.totalEntries - dashboard.uniqueInstruments} lançamentos excedentes — revisar células mescladas no SIAFI.
-                  </span>
+                  <div style={{ background: '#e2e8f0', borderRadius: 3, height: 6 }}>
+                    <div style={{ width: `${filteredStats.total > 0 ? Math.round((d.val / filteredStats.total) * 100) : 0}%`, background: d.color, height: 6, borderRadius: 3 }} />
+                  </div>
                 </div>
-              ) : (
-                <div style={{ background: '#f0fdf4', border: '1px solid #bbf7d0', borderRadius: 8, padding: '0.65rem' }}>
-                  <span style={{ fontSize: '0.7rem', color: '#15803d', fontWeight: 600 }}>✓ 1 lançamento por instrumento — sem inflação</span>
-                </div>
-              )}
+              ))}
             </div>
           </div>
 
