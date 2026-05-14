@@ -406,15 +406,23 @@ export default function App() {
         const r = rowsSiafi[i];
         if (!r) continue;
         r.forEach((cell, idx) => {
-          const norm = normalizeText(String(cell));
-          if (contaColIdx === -1 && norm.includes('conta') && norm.includes('contabil'))
+          const text = String(cell).trim();
+          const norm = normalizeText(text);
+
+          // Exact match to avoid false positive from metadata row
+          // "Métrica: Saldo - Moeda Origem (Conta Contábil)" which also contains both words
+          if (contaColIdx === -1 && norm === 'conta contabil')
             contaColIdx = idx;
-          if (valorColIdx === -1 && norm.includes('transferencia') && norm.includes('valor') && !norm.includes('contrapartida'))
+
+          if (valorColIdx === -1 && norm.includes('transferencia') && norm.includes('valor') && !norm.includes('contrapartida') && !norm.includes('saldo'))
             valorColIdx = idx;
-          if (eventoColIdx === -1 && (norm === 'evento' || (norm.includes('evento') && !norm.includes('descricao') && !norm.includes('nome'))))
+
+          if (eventoColIdx === -1 && (norm === 'evento' || (norm.startsWith('evento') && text.length <= 25)))
             eventoColIdx = idx;
+
           if (cnpjColSiafiIdx === -1 && norm.includes('cnpj'))
             cnpjColSiafiIdx = idx;
+
           if (convenentColSiafiIdx === -1 && norm.includes('convenente') && !norm.includes('cnpj') && !norm.includes('uf') && !norm.includes('municipio'))
             convenentColSiafiIdx = idx;
         });
@@ -425,6 +433,37 @@ export default function App() {
         alert("Não foi possível identificar a coluna 'Conta Contábil' na planilha SIAFI. Verifique o formato do arquivo.");
         setIsProcessing(false);
         return;
+      }
+
+      // Fallback data-based CNPJ: se header não detectou, busca coluna com 40%+ de valores de 11-14 dígitos
+      if (cnpjColSiafiIdx === -1 && siafiHeaderRowIdx !== -1) {
+        const sampleRows = rowsSiafi.slice(siafiHeaderRowIdx + 1, siafiHeaderRowIdx + 21).filter(r => r && r.length > 0);
+        if (sampleRows.length > 0) {
+          const colCount = Math.max(...sampleRows.map(r => r.length));
+          for (let col = 0; col < colCount; col++) {
+            const hits = sampleRows.filter(r => {
+              const d = String(r[col] ?? "").replace(/\D/g, "");
+              return d.length >= 11 && d.length <= 14;
+            }).length;
+            if (hits >= Math.ceil(sampleRows.length * 0.4)) { cnpjColSiafiIdx = col; break; }
+          }
+        }
+      }
+
+      // Fallback data-based Convenente: coluna com texto longo não-numérico em 50%+ das amostras
+      if (convenentColSiafiIdx === -1 && siafiHeaderRowIdx !== -1) {
+        const sampleRows = rowsSiafi.slice(siafiHeaderRowIdx + 1, siafiHeaderRowIdx + 21).filter(r => r && r.length > 0);
+        if (sampleRows.length > 0) {
+          const colCount = Math.max(...sampleRows.map(r => r.length));
+          for (let col = 0; col < colCount; col++) {
+            if (col === cnpjColSiafiIdx || col === contaColIdx) continue;
+            const hits = sampleRows.filter(r => {
+              const val = String(r[col] ?? "").trim();
+              return val.length > 10 && !/^\d[\d.,\s]*$/.test(val) && !/^\d{9}$/.test(val);
+            }).length;
+            if (hits >= Math.ceil(sampleRows.length * 0.5)) { convenentColSiafiIdx = col; break; }
+          }
+        }
       }
 
       // Blacklist: código 7xxxxx que apareça em >50% das linhas da col A é UG, não instrumento
