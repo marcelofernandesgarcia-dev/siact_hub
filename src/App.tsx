@@ -392,82 +392,42 @@ export default function App() {
         }
       }
 
-      // --- 2. Process SIAFI (cross-tab handling) ---
-      // ID is always col A (index 0) — CGU rigid mapping, no detection needed.
-      // Scan all header rows to detect CNPJ, Convenente and account-code columns.
-      // CNPJ/Convenente may be in a DIFFERENT row than the account codes (multi-row headers).
-      let accountCols: { idx: number; code: string; headerName: string }[] = [];
-      let siafiHeaderRowIdx = 0;
-      let maxAccountColsFound = 0;
-      let cnpjColSiafiIdx = -1;
-      let convenentColSiafiIdx = -1;
+      // --- 2. Process SIAFI (formato normalizado — novo formato MTur 2026) ---
+      // Cada linha = instrumento × conta contábil × evento
+      // Fase 1: Localizar colunas pelos cabeçalhos
+      let siafiHeaderRowIdx = -1;
+      let contaColIdx      = -1;  // "Conta Contábil" → código 9 dígitos como VALOR
+      let valorColIdx      = -1;  // "Transferência - Valor" → valor de referência
+      let eventoColIdx     = -1;  // "Evento" → código do evento contábil
+      let cnpjColSiafiIdx      = -1;  // CNPJ do convenente
+      let convenentColSiafiIdx = -1;  // Nome do convenente
 
       for (let i = 0; i < Math.min(20, rowsSiafi.length); i++) {
         const r = rowsSiafi[i];
         if (!r) continue;
-
-        const currentAccountCols: { idx: number; code: string; headerName: string }[] = [];
         r.forEach((cell, idx) => {
-          const text = String(cell).trim();
-          const norm = normalizeText(text);
-
-          // Detect CNPJ column header in any row — matches "CNPJ", "CNPJ Convenente", "CNPJ/CPF", etc.
-          if (cnpjColSiafiIdx === -1 && norm.includes('cnpj') && !norm.includes('municipio') && !norm.includes('uf')) {
+          const norm = normalizeText(String(cell));
+          if (contaColIdx === -1 && norm.includes('conta') && norm.includes('contabil'))
+            contaColIdx = idx;
+          if (valorColIdx === -1 && norm.includes('transferencia') && norm.includes('valor') && !norm.includes('contrapartida'))
+            valorColIdx = idx;
+          if (eventoColIdx === -1 && (norm === 'evento' || (norm.includes('evento') && !norm.includes('descricao') && !norm.includes('nome'))))
+            eventoColIdx = idx;
+          if (cnpjColSiafiIdx === -1 && norm.includes('cnpj'))
             cnpjColSiafiIdx = idx;
-          }
-
-          // Detect Convenente column header in any row
-          if (convenentColSiafiIdx === -1 &&
-              (norm === 'convenente' || norm === 'proponente' || norm === 'favorecido' ||
-               (norm.includes('convenente') && !norm.includes('cnpj') && !norm.includes('uf')))) {
+          if (convenentColSiafiIdx === -1 && norm.includes('convenente') && !norm.includes('cnpj') && !norm.includes('uf') && !norm.includes('municipio'))
             convenentColSiafiIdx = idx;
-          }
-
-          const match = text.match(/\b\d{9}\b/);
-          if (match) {
-            currentAccountCols.push({ idx, code: match[0], headerName: text });
-          }
         });
-
-        if (currentAccountCols.length > maxAccountColsFound) {
-          maxAccountColsFound = currentAccountCols.length;
-          accountCols = currentAccountCols;
-          siafiHeaderRowIdx = i;
-        }
+        if (contaColIdx !== -1 && siafiHeaderRowIdx === -1) siafiHeaderRowIdx = i;
       }
 
-      if (accountCols.length === 0) {
-        alert("Não foi possível identificar o formato da planilha do SIAFI.");
+      if (contaColIdx === -1) {
+        alert("Não foi possível identificar a coluna 'Conta Contábil' na planilha SIAFI. Verifique o formato do arquivo.");
         setIsProcessing(false);
         return;
       }
 
-      // Data-based CNPJ fallback: if header detection failed, find the column whose values
-      // consistently contain 14-digit numbers (Brazilian CNPJ pattern).
-      if (cnpjColSiafiIdx === -1) {
-        const sampleStart = siafiHeaderRowIdx + 1;
-        const sampleRows = rowsSiafi.slice(sampleStart, sampleStart + 20).filter(r => r && r.length > 0);
-        if (sampleRows.length > 0) {
-          const colCount = Math.max(...sampleRows.map(r => r.length));
-          for (let col = 0; col < colCount; col++) {
-            const hits = sampleRows.filter(r => {
-              const digits = String(r[col] ?? "").replace(/\D/g, "");
-              return digits.length >= 11 && digits.length <= 14;
-            }).length;
-            if (hits >= Math.ceil(sampleRows.length * 0.4)) {
-              cnpjColSiafiIdx = col;
-              break;
-            }
-          }
-        }
-      }
-
-      let corretos = 0, inconsistencias = 0, naoEncontrados = 0, alertas = 0;
-      const confirmedCorrectIds = new Set<string>();
-      const finalResults: any[] = [];
-
-      // Pre-scan col A: blacklist any 7-prefix 6-digit value appearing in >50% of rows.
-      // Uses the same pattern as extractTransferId so only genuine candidates are counted.
+      // Blacklist: código 7xxxxx que apareça em >50% das linhas da col A é UG, não instrumento
       const colAFreq: Record<string, number> = {};
       let colADataRows = 0;
       for (let i = siafiHeaderRowIdx + 1; i < rowsSiafi.length; i++) {
@@ -485,68 +445,95 @@ export default function App() {
           .map(([k]) => k)
       );
 
+      // Fase 2: Construir mapa de instrumentos (ID → contas + eventos + CNPJ + Convenente)
+      type ContraEntry = { display: string; eventos: string[] };
+      const instrumentMap = new Map<string, {
+        contas: Map<string, ContraEntry>;
+        cnpj: string;
+        convenente: string;
+      }>();
       let lastIdSiafi = "";
-      let lastConvenenteSiafi = "";
       let lastCnpjSiafi = "";
-      let lastSituacaoRawSiafi = "";
+      let lastConvenenteSiafi = "";
 
       for (let i = siafiHeaderRowIdx + 1; i < rowsSiafi.length; i++) {
         const row = rowsSiafi[i];
         if (!row || row.length === 0) continue;
 
-        // Constraint ①: ID = 7xxxxx exactly (enforced by extractTransferId regex)
-        // Constraint ②: blacklist blocks any 7xxxxx value that repeats in >50% of rows
+        // ID col A — carry-forward para células mescladas
         let idSiafi = extractTransferId(row[0]);
         if (idSiafi && ugCodeBlacklist.has(idSiafi)) idSiafi = null;
-        if (idSiafi) {
-           lastIdSiafi = idSiafi;
-        } else {
-           idSiafi = lastIdSiafi;
-        }
+        if (idSiafi) lastIdSiafi = idSiafi;
+        else idSiafi = lastIdSiafi;
         if (!idSiafi) continue;
 
-        // FIX-2 (Vuln 6): Collect ALL non-zero accounts — no silent truncation.
-        // If multiple accounts have balances, the system flags the row for human review
-        // rather than silently picking the first one.
-        // SKILL §6: Use accountMap for full literal names; fallback to raw header only if unknown
-        const detectedAccounts: { code: string; display: string }[] = [];
-        for (const ac of accountCols) {
-          const val = row[ac.idx];
-          if (val !== undefined && val !== null && val !== "") {
-            const strVal = String(val).trim();
-            if (strVal !== "-" && strVal !== "0" && strVal !== "0,00" && strVal !== "0.00") {
-              // SKILL §E: Formatação → [Código] - [Nome do Dicionário]
-              const acName = accountMap[ac.code] || ac.headerName;
-              detectedAccounts.push({ code: ac.code, display: `${ac.code} - ${acName}` });
-            }
+        // Conta Contábil — deve ser exatamente 9 dígitos
+        const contaRaw = String(row[contaColIdx] ?? "").trim();
+        if (!contaRaw.match(/^\d{9}$/)) continue;
+
+        // CNPJ (carry-forward)
+        if (cnpjColSiafiIdx !== -1) {
+          const cnpjRaw = String(row[cnpjColSiafiIdx] ?? "").trim();
+          const d = cnpjRaw.replace(/\D/g, "");
+          if (d.length >= 11 && d.length <= 14) lastCnpjSiafi = cnpjRaw;
+        }
+
+        // Convenente nome (carry-forward — rejeita valores numéricos)
+        if (convenentColSiafiIdx !== -1) {
+          const convRaw = String(row[convenentColSiafiIdx] ?? "").trim();
+          if (convRaw && convRaw.length > 5 && !/^\d[\d.,\s]*$/.test(convRaw))
+            lastConvenenteSiafi = convRaw;
+        }
+
+        // Inicializar entrada do instrumento
+        if (!instrumentMap.has(idSiafi)) {
+          instrumentMap.set(idSiafi, { contas: new Map(), cnpj: lastCnpjSiafi, convenente: lastConvenenteSiafi });
+        }
+        const entry = instrumentMap.get(idSiafi)!;
+        if (!entry.cnpj && lastCnpjSiafi) entry.cnpj = lastCnpjSiafi;
+        if (!entry.convenente && lastConvenenteSiafi) entry.convenente = lastConvenenteSiafi;
+
+        // Registrar conta contábil
+        if (!entry.contas.has(contaRaw)) {
+          const acName = accountMap[contaRaw] || contaRaw;
+          entry.contas.set(contaRaw, { display: `${contaRaw} - ${acName}`, eventos: [] });
+        }
+
+        // Registrar evento de referência (ignorar "-9" = NAO SE APLICA)
+        const eventoCode = eventoColIdx !== -1 ? String(row[eventoColIdx] ?? "").trim() : "";
+        if (eventoCode && eventoCode !== "-9" && eventoCode !== "0") {
+          const contraEntry = entry.contas.get(contaRaw)!;
+          if (!contraEntry.eventos.includes(eventoCode)) {
+            contraEntry.eventos.push(eventoCode);
           }
         }
+      }
+
+      // Fase 3: Gerar resultados a partir do mapa de instrumentos
+      let corretos = 0, inconsistencias = 0, naoEncontrados = 0, alertas = 0;
+      const confirmedCorrectIds = new Set<string>();
+      const finalResults: any[] = [];
+
+      for (const [idSiafi, entry] of instrumentMap) {
+        const detectedAccounts = [...entry.contas.entries()].map(([code, info]) => ({
+          code,
+          display: info.display,
+          eventos: info.eventos,
+        }));
 
         const situacaoSiafiDisplay =
           detectedAccounts.length === 0
             ? "Sem Saldo no SIAFI"
-            : detectedAccounts.map(a => a.display).join(' | ');
+            : detectedAccounts.map(a => {
+                const refEventos = a.eventos.length > 0
+                  ? ` [Ref. Eventos: ${a.eventos.join(" · ")}]`
+                  : "";
+                return a.display + refEventos;
+              }).join(" | ");
 
-        // Convenente — detected column with carry-forward; rejects numeric (balance) values
-        const convRaw = String(row[convenentColSiafiIdx !== -1 ? convenentColSiafiIdx : 11] ?? "").trim();
-        const isConvenenteBlank = !convRaw || convRaw === "0" || /^\d[\d.,\s]*$/.test(convRaw);
-        if (!isConvenenteBlank) lastConvenenteSiafi = convRaw;
-        const convenenteSiafi = !isConvenenteBlank ? convRaw : lastConvenenteSiafi;
-
-        // CNPJ — detected column with carry-forward; validates 14-digit CNPJ format
-        const cnpjRaw = String(row[cnpjColSiafiIdx !== -1 ? cnpjColSiafiIdx : 10] ?? "").trim();
-        const cnpjDigits = cnpjRaw.replace(/\D/g, "");
-        const isCnpjBlank = !cnpjRaw || cnpjRaw === "0" || cnpjDigits.length < 11 || cnpjDigits.length > 14;
-        if (!isCnpjBlank) lastCnpjSiafi = cnpjRaw;
-        const cnpjSiafi = !isCnpjBlank ? cnpjRaw : lastCnpjSiafi;
-
-        // SKILL §3: Col D (idx 3) Situação Contábil — carry-forward
-        const rawSituacaoContabil = String(row[3] ?? "").trim();
-        const isSituacaoInvalid = !rawSituacaoContabil || /^\d[\d.,\s-]*$/.test(rawSituacaoContabil);
-        if (!isSituacaoInvalid) lastSituacaoRawSiafi = rawSituacaoContabil;
-        const situacaoRawSiafi = !isSituacaoInvalid
-          ? rawSituacaoContabil
-          : (lastSituacaoRawSiafi || situacaoSiafiDisplay);
+        const convenenteSiafi = entry.convenente;
+        const cnpjSiafi = entry.cnpj;
+        const situacaoRawSiafi = situacaoSiafiDisplay;
 
         let situacaoTg = "Sem Registro no Transferegov";
         let situacaoRawTg = "Sem Registro no Transferegov";
@@ -554,7 +541,6 @@ export default function App() {
         let statusConciliacao = "";
         let contasForaDoConjunto: string[] = [];
 
-        // Pre-populate TG situation for ALL branches (multi-account rows included).
         if (tgMap.has(idSiafi) && !tgMap.get(idSiafi)!.ambiguous) {
           const tgEntry = tgMap.get(idSiafi)!;
           situacaoRawTg = tgEntry.status || String(tgEntry.fullRow[15] ?? "").trim();
@@ -562,54 +548,38 @@ export default function App() {
 
         if (tgMap.has(idSiafi)) {
           const tgData = tgMap.get(idSiafi)!;
-
           if (tgData.ambiguous) {
-            // Blind scanner found multiple ID candidates on the TG row
             situacaoTg = "Ambiguidade no ID (TG)";
             statusConciliacao = "Revisão Manual - ID Ambíguo";
             if (!confirmedCorrectIds.has(idSiafi)) alertas++;
           } else {
             situacaoTg = tgData.status;
-            if (tgData.convenente && tgData.convenente !== "-") {
-              convenenteNome = tgData.convenente;
-            }
+            if (tgData.convenente && tgData.convenente !== "-") convenenteNome = tgData.convenente;
 
             if (detectedAccounts.length === 0) {
-              // Zero balance in all SIAFI accounts
               statusConciliacao = "Sem Saldo no SIAFI";
               if (!confirmedCorrectIds.has(idSiafi)) alertas++;
             } else {
-              // RITO ORDINÁRIO: resolve valid set for this TG situation
               const matchedRuleKey = Object.keys(validationRules).find(
                 rule => normalizeStatusKey(rule) === normalizeStatusKey(situacaoTg)
               );
-
               if (!matchedRuleKey) {
                 statusConciliacao = "Status Não Mapeado";
                 if (!confirmedCorrectIds.has(idSiafi)) inconsistencias++;
               } else {
                 const validSet = validationRules[matchedRuleKey];
-
                 if (validSet.length === 0) {
-                  // Empty-array sentinel — rule not yet configured
                   statusConciliacao = "Regra Pendente - Revisar";
                   if (!confirmedCorrectIds.has(idSiafi)) alertas++;
                 } else {
-                  // RITO ORDINÁRIO core check:
-                  // ALL detected accounts must belong to the valid set.
-                  // Having multiple valid accounts simultaneously is CORRECT.
-                  // Any account outside the set → Rito Patológico → Inconsistência.
                   contasForaDoConjunto = detectedAccounts
                     .filter(a => !validSet.includes(a.code))
                     .map(a => a.display);
-
                   if (contasForaDoConjunto.length === 0) {
-                    // Every detected account is within the valid set → Correto
                     statusConciliacao = "Correto";
                     corretos++;
                     confirmedCorrectIds.add(idSiafi);
                   } else {
-                    // At least one account is outside the valid set → Rito Patológico
                     statusConciliacao = "Inconsistência (Rito Patológico)";
                     if (!confirmedCorrectIds.has(idSiafi)) inconsistencias++;
                   }
@@ -629,69 +599,32 @@ export default function App() {
             ? `OK — ${nContas} contas dentro do conjunto válido (Rito Ordinário): ${situacaoSiafiDisplay}`
             : "OK";
         } else if (statusConciliacao === "Inconsistência (Rito Patológico)") {
-          motivo = `Conta(s) fora do conjunto válido para '${situacaoTg}': ${contasForaDoConjunto.join(' | ')}`;
+          motivo = `Conta(s) fora do conjunto válido para '${situacaoTg}': ${contasForaDoConjunto.join(" | ")}`;
         } else if (statusConciliacao === "Revisão Manual - ID Ambíguo") {
           motivo = "Múltiplos IDs candidatos na mesma linha do Transferegov.";
         } else if (statusConciliacao === "Regra Pendente - Revisar") {
           motivo = `Regra não configurada para: '${situacaoTg}'.`;
-        } else if (statusConciliacao === "Inconsistência") {
-          motivo = `Conta detectada incompatível com situação '${situacaoTg}'.`;
         } else if (statusConciliacao === "Status Não Mapeado") {
           motivo = `A situação '${situacaoTg}' não possui mapeamento no sistema.`;
         } else if (statusConciliacao === "Sem Saldo no SIAFI") {
-          motivo = `Nenhuma conta com saldo positivo no SIAFI.`;
+          motivo = "Nenhuma conta contábil detectada no SIAFI.";
         } else if (statusConciliacao === "Sem Registro no Transferegov") {
-          motivo = `ID não consta na base do Transferegov.`;
+          motivo = "ID não consta na base do Transferegov.";
         } else {
           motivo = "Desconhecido";
         }
 
-        const resultRow: any = {};
-
-        // 1. Prefix TG Headers
-        const tgHeaders = tgHeaderRowIdx !== -1 ? rowsTg[tgHeaderRowIdx] : [];
-        const tgDataForExport = tgMap.has(idSiafi) ? tgMap.get(idSiafi)!.fullRow : [];
-        for (let colIdx = 0; colIdx < Math.max(tgHeaders.length, tgDataForExport.length); colIdx++) {
-          let headerName = tgHeaders[colIdx] ? String(tgHeaders[colIdx]).trim() : `TG_Coluna_${colIdx + 1}`;
-          if (!headerName) headerName = `TG_Coluna_${colIdx + 1}`;
-          let finalKey = `[TG] ${headerName}`;
-          let counter = 1;
-          while (resultRow.hasOwnProperty(finalKey)) {
-            finalKey = `[TG] ${headerName}_${counter}`;
-            counter++;
-          }
-          resultRow[finalKey] = tgDataForExport[colIdx] !== undefined ? tgDataForExport[colIdx] : "";
-        }
-
-        // 2. Prefix SIAFI Headers
-        const siafiHeaders = rowsSiafi[siafiHeaderRowIdx] || [];
-        for (let colIdx = 0; colIdx < Math.max(siafiHeaders.length, row.length); colIdx++) {
-          let headerName = siafiHeaders[colIdx] ? String(siafiHeaders[colIdx]).trim() : `SIAFI_Coluna_${colIdx + 1}`;
-          if (!headerName) headerName = `SIAFI_Coluna_${colIdx + 1}`;
-          let finalKey = `[SIAFI] ${headerName}`;
-          let counter = 1;
-          while (resultRow.hasOwnProperty(finalKey)) {
-            finalKey = `[SIAFI] ${headerName}_${counter}`;
-            counter++;
-          }
-          resultRow[finalKey] = row[colIdx] !== undefined ? row[colIdx] : "";
-        }
-
-        // 3. Status e Motivo no final
-        resultRow["Status de Conciliação"] = statusConciliacao;
-        resultRow["Motivo do Alerta"] = motivo;
-
         finalResults.push({
           idSiafi,
           convenenteNome,
-          convenenteSiafi,   // SIAFI col-L specific value (for export col B)
+          convenenteSiafi,
           cnpjSiafi,
           situacaoRawTg,
           situacaoRawSiafi,
           situacaoTg,
           situacaoSiafiDisplay,
           statusConciliacao,
-          fullData: resultRow,
+          fullData: { "Status de Conciliação": statusConciliacao, "Motivo do Alerta": motivo },
         });
       }
 
