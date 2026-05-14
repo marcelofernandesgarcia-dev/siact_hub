@@ -260,18 +260,23 @@ export default function App() {
   }, [results]);
 
   const uniqueContasSiafi = useMemo(() => {
-    const set = new Set<string>();
+    const map = new Map<string, string>();
     for (const r of results) {
       const parts = (r.situacaoSiafiDisplay || '').split(' | ');
       for (const p of parts) {
         const m = p.match(/^(\d{9})/);
-        if (m) {
-          const code = m[1];
-          set.add(`${code} - ${accountMap[code] || code}`);
+        if (m && !map.has(m[1])) {
+          const full = accountMap[m[1]] || `Conta ${m[1]}`;
+          const short = full
+            .replace(/^Convênios e [Ii]nstrumentos [Cc]ongêneres\s+/i, '')
+            .replace(/^Convênios e instrumentos\s+/i, '');
+          map.set(m[1], short);
         }
       }
     }
-    return [...set].sort();
+    return [...map.entries()]
+      .sort((a, b) => a[1].localeCompare(b[1]))
+      .map(([code, name]) => ({ code, name }));
   }, [results]);
 
   const filteredResults = useMemo(() => {
@@ -279,10 +284,7 @@ export default function App() {
     return results.filter(r => {
       if (idTrim && !String(r.idSiafi ?? '').includes(idTrim)) return false;
       if (filterSituacaoTg && r.situacaoRawTg !== filterSituacaoTg) return false;
-      if (filterContaSiafi) {
-        const code = filterContaSiafi.split(' - ')[0];
-        if (!String(r.situacaoSiafiDisplay ?? '').includes(code)) return false;
-      }
+      if (filterContaSiafi && !String(r.situacaoSiafiDisplay ?? '').includes(filterContaSiafi)) return false;
       if (filterStatus && r.statusConciliacao !== filterStatus) return false;
       return true;
     });
@@ -1129,8 +1131,8 @@ export default function App() {
               style={{ flex: '1 1 220px', minWidth: 200, padding: '0.45rem 0.75rem', border: '1px solid #cbd5e1', borderRadius: 8, fontSize: '0.82rem', background: '#fff', outline: 'none' }}
             >
               <option value="">Todas as Contas (SIAFI)</option>
-              {uniqueContasSiafi.map(s => (
-                <option key={s} value={s}>{s}</option>
+              {uniqueContasSiafi.map(({ code, name }) => (
+                <option key={code} value={code}>{name}</option>
               ))}
             </select>
             <select
