@@ -69,6 +69,7 @@ const accountMap: Record<string, string> = {
   '812210102': 'Convênios e Instrumentos Congêneres a Comprovar',
   '812210103': 'Convênios e Instrumentos Congêneres a Aprovar',
   '812210104': 'Convênios e Instrumentos Congêneres Aprovados',
+  '812210105': 'Convênios e Instrumentos Congêneres Comprovados em Análise',
   '812210106': 'Convênios e instrumentos Congêneres em Inadimplência Efetiva',
   '812210107': 'Convênios e Instrumentos Congêneres em Inadimplência Suspensa',
   '812210108': 'Convênios e Instrumentos Congêneres Cancelados',
@@ -137,6 +138,20 @@ const CRITICAL_ACCS = [
   { code: "811210109", label: "Extinto",     color: "#8b5cf6" },
   { code: "811210100", label: "Em Execução", color: "#f59e0b" },
 ];
+
+// ── Tema do Dashboard (dark-mode) ─────────────────────────────────────────
+// Para reverter ao tema claro, substitua cada valor pelo comentado à direita.
+const DASH = {
+  cardText:   '#f1f5f9',               // revert → '#1e293b'
+  cardMuted:  '#94a3b8',               // revert → '#475569'
+  cardSubtle: '#64748b',               // unchanged
+  chipBg:     'rgba(255,255,255,0.07)',// revert → '#f8fafc'
+  barTrack:   'rgba(255,255,255,0.10)',// revert → '#e2e8f0'
+  barBlue:    'linear-gradient(90deg,#1d4ed8,#3b82f6)', // revert → '#3b82f6'
+  numBadge:   'rgba(96,165,250,0.15)', // revert → 'transparent'
+  numColor:   '#60a5fa',               // revert → '#1e293b'
+};
+// ──────────────────────────────────────────────────────────────────────────
 
 class ErrorBoundary extends Component<
   { children: ReactNode },
@@ -298,7 +313,7 @@ export default function App() {
       { label: 'Alertas — Revisar',     val: alertas,          color: '#f97316' },
       { label: 'Sem Ref. Transferegov', val: naoEncontrados,   color: '#f59e0b' },
     ];
-    const C = 2 * Math.PI * 52;
+    const C = 2 * Math.PI * 62;
     let off = 0;
     const segments = items.filter(d => d.val > 0).map(d => {
       const frac = d.val / (total || 1);
@@ -950,21 +965,21 @@ export default function App() {
           {/* ── Card 1: Transferegov — barras horizontais por status ── */}
           <div className="stat-card" style={{ padding: '1.25rem', display: 'flex', flexDirection: 'column', alignItems: 'flex-start' }}>
             <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginBottom: '1rem' }}>
-              <BarChart2 size={16} color="#3b82f6" />
-              <span style={{ fontWeight: 700, fontSize: '0.82rem', color: '#1e293b' }}>
+              <BarChart2 size={16} color="#60a5fa" />
+              <span style={{ fontWeight: 700, fontSize: '0.82rem', color: DASH.cardText }}>
                 Transferegov — Volume por Status
               </span>
             </div>
             {dashboard.tgEntries.map(([st, n]) => (
-              <div key={st} style={{ width: '100%', marginBottom: '0.55rem' }}>
-                <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.7rem', marginBottom: 2 }}>
-                  <span style={{ maxWidth: '78%', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', color: '#475569' }}>
+              <div key={st} style={{ width: '100%', marginBottom: '0.6rem' }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.72rem', marginBottom: 3, alignItems: 'center' }}>
+                  <span style={{ maxWidth: '76%', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', color: DASH.cardMuted }}>
                     {st || '—'}
                   </span>
-                  <span style={{ fontWeight: 700, color: '#1e293b' }}>{n}</span>
+                  <span style={{ fontWeight: 800, color: DASH.numColor, fontSize: '0.78rem', background: DASH.numBadge, padding: '1px 7px', borderRadius: 99, flexShrink: 0 }}>{n}</span>
                 </div>
-                <div style={{ background: '#e2e8f0', borderRadius: 3, height: 6 }}>
-                  <div style={{ width: `${Math.round((n / dashboard.tgMax) * 100)}%`, background: '#3b82f6', height: 6, borderRadius: 3 }} />
+                <div style={{ background: DASH.barTrack, borderRadius: 4, height: 8 }}>
+                  <div style={{ width: `${Math.round((n / dashboard.tgMax) * 100)}%`, background: DASH.barBlue, height: 8, borderRadius: 4 }} />
                 </div>
               </div>
             ))}
@@ -973,29 +988,29 @@ export default function App() {
           {/* ── Card 2: SIAFI — Distribuição de Contas (BI) ── */}
           <div className="stat-card" style={{ padding: '1.25rem', display: 'flex', flexDirection: 'column', alignItems: 'flex-start' }}>
             <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginBottom: '0.75rem' }}>
-              <PieChart size={16} color="#8b5cf6" />
-              <span style={{ fontWeight: 700, fontSize: '0.82rem', color: '#1e293b' }}>
+              <PieChart size={16} color="#a78bfa" />
+              <span style={{ fontWeight: 700, fontSize: '0.82rem', color: DASH.cardText }}>
                 SIAFI — Distribuição de Contas
               </span>
             </div>
 
             {/* KPI chips */}
-            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3,1fr)', gap: '0.4rem', width: '100%', marginBottom: '0.85rem' }}>
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3,1fr)', gap: '0.4rem', width: '100%', marginBottom: '0.75rem' }}>
               {[
                 { label: 'Instrumentos', val: dashboard.uniqueInstruments },
                 { label: 'Contas SIAFI', val: dashboard.allAccEntries.length },
                 { label: 'Média Contas', val: (dashboard.allAccTotal / Math.max(dashboard.uniqueInstruments, 1)).toFixed(1) },
               ].map(k => (
-                <div key={k.label} style={{ background: '#f8fafc', borderRadius: 8, padding: '0.4rem 0.5rem', textAlign: 'center' }}>
-                  <div style={{ fontSize: '1rem', fontWeight: 800, color: '#1e293b', lineHeight: 1.2 }}>{k.val}</div>
-                  <div style={{ fontSize: '0.6rem', color: '#64748b', marginTop: 2 }}>{k.label}</div>
+                <div key={k.label} style={{ background: DASH.chipBg, borderRadius: 8, padding: '0.5rem 0.4rem', textAlign: 'center', border: '1px solid rgba(255,255,255,0.06)' }}>
+                  <div style={{ fontSize: '1.15rem', fontWeight: 800, color: DASH.cardText, lineHeight: 1.1 }}>{k.val}</div>
+                  <div style={{ fontSize: '0.6rem', color: DASH.cardSubtle, marginTop: 3, textTransform: 'uppercase', letterSpacing: '0.04em' }}>{k.label}</div>
                 </div>
               ))}
             </div>
 
             {/* Donut */}
-            <div style={{ display: 'flex', justifyContent: 'center', width: '100%', marginBottom: '0.75rem' }}>
-              <svg width="120" height="120" viewBox="0 0 130 130">
+            <div style={{ display: 'flex', justifyContent: 'center', width: '100%', marginBottom: '0.7rem' }}>
+              <svg width="118" height="118" viewBox="0 0 130 130">
                 {dashboard.allSegments.length > 0
                   ? dashboard.allSegments.map((seg, i) => (
                       <circle key={i} cx="65" cy="65" r="50"
@@ -1005,17 +1020,17 @@ export default function App() {
                         transform="rotate(-90 65 65)"
                       />
                     ))
-                  : <circle cx="65" cy="65" r="50" fill="none" stroke="#e2e8f0" strokeWidth="18" />
+                  : <circle cx="65" cy="65" r="50" fill="none" stroke={DASH.barTrack} strokeWidth="18" />
                 }
-                <text x="65" y="61" textAnchor="middle" fontSize="14" fontWeight="800" fill="#1e293b">
+                <text x="65" y="61" textAnchor="middle" fontSize="15" fontWeight="800" fill={DASH.cardText}>
                   {dashboard.allAccTotal}
                 </text>
-                <text x="65" y="75" textAnchor="middle" fontSize="8.5" fill="#64748b">lançamentos</text>
+                <text x="65" y="75" textAnchor="middle" fontSize="8.5" fill={DASH.cardSubtle}>lançamentos</text>
               </svg>
             </div>
 
             {/* Barras horizontais por conta */}
-            <div style={{ display: 'flex', flexDirection: 'column', gap: '0.45rem', width: '100%' }}>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '0.42rem', width: '100%' }}>
               {dashboard.allAccEntries.map(d => {
                 const short = d.fullLabel
                   .replace(/^Convênios e [Ii]nstrumentos [Cc]ongêneres\s+/i, '')
@@ -1023,17 +1038,17 @@ export default function App() {
                 const pct = ((d.n / dashboard.allAccTotal) * 100).toFixed(1);
                 return (
                   <div key={d.code}>
-                    <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.68rem', marginBottom: 2 }}>
-                      <span style={{ display: 'flex', alignItems: 'center', gap: '0.3rem', color: '#475569', maxWidth: '72%', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.7rem', marginBottom: 3, alignItems: 'center' }}>
+                      <span style={{ display: 'flex', alignItems: 'center', gap: '0.35rem', color: DASH.cardMuted, maxWidth: '70%', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                         <span style={{ width: 8, height: 8, borderRadius: '50%', background: d.color, display: 'inline-block', flexShrink: 0 }} />
                         {short}
                       </span>
-                      <span style={{ fontWeight: 700, color: '#1e293b', flexShrink: 0 }}>
-                        {d.n} <span style={{ fontWeight: 400, color: '#94a3b8' }}>({pct}%)</span>
+                      <span style={{ fontWeight: 800, color: DASH.cardText, flexShrink: 0, fontSize: '0.72rem' }}>
+                        {d.n} <span style={{ fontWeight: 400, color: DASH.cardSubtle }}>({pct}%)</span>
                       </span>
                     </div>
-                    <div style={{ background: '#e2e8f0', borderRadius: 3, height: 5 }}>
-                      <div style={{ width: `${Math.round((d.n / dashboard.accMax) * 100)}%`, background: d.color, height: 5, borderRadius: 3 }} />
+                    <div style={{ background: DASH.barTrack, borderRadius: 4, height: 7 }}>
+                      <div style={{ width: `${Math.round((d.n / dashboard.accMax) * 100)}%`, background: d.color, height: 7, borderRadius: 4 }} />
                     </div>
                   </div>
                 );
@@ -1043,37 +1058,37 @@ export default function App() {
 
           {/* ── Card 3: Resultado da Auditoria — reage a filtros ── */}
           <div className="stat-card" style={{ padding: '1.25rem', display: 'flex', flexDirection: 'column', alignItems: 'flex-start' }}>
-            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', width: '100%', marginBottom: '0.75rem' }}>
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', width: '100%', marginBottom: '0.6rem' }}>
               <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-                <TrendingUp size={16} color="#10b981" />
-                <span style={{ fontWeight: 700, fontSize: '0.82rem', color: '#1e293b' }}>Resultado da Auditoria</span>
+                <TrendingUp size={16} color="#34d399" />
+                <span style={{ fontWeight: 700, fontSize: '0.82rem', color: DASH.cardText }}>Resultado da Auditoria</span>
               </div>
               {(filterNrInstrumento || filterSituacaoTg || filterContaSiafi || filterStatus) && (
-                <span style={{ fontSize: '0.63rem', fontWeight: 700, color: '#3b82f6', background: '#eff6ff', border: '1px solid #bfdbfe', borderRadius: 99, padding: '2px 8px' }}>
+                <span style={{ fontSize: '0.63rem', fontWeight: 700, color: '#60a5fa', background: 'rgba(96,165,250,0.15)', border: '1px solid rgba(96,165,250,0.3)', borderRadius: 99, padding: '2px 8px' }}>
                   Filtrado
                 </span>
               )}
             </div>
 
-            {/* Donut de destaque */}
-            <div style={{ display: 'flex', justifyContent: 'center', width: '100%', marginBottom: '0.8rem' }}>
-              <svg width="150" height="150" viewBox="0 0 150 150">
+            {/* Donut de destaque — maior para ocupar o espaço */}
+            <div style={{ display: 'flex', justifyContent: 'center', width: '100%', marginBottom: '0.7rem' }}>
+              <svg width="170" height="170" viewBox="0 0 170 170">
                 {filteredStats.segments.length > 0
                   ? filteredStats.segments.map((seg, i) => (
-                      <circle key={i} cx="75" cy="75" r="52"
+                      <circle key={i} cx="85" cy="85" r="62"
                         fill="none" stroke={seg.color} strokeWidth="22"
                         strokeDasharray={seg.dasharray}
                         strokeDashoffset={seg.dashoffset}
-                        transform="rotate(-90 75 75)"
+                        transform="rotate(-90 85 85)"
                       />
                     ))
-                  : <circle cx="75" cy="75" r="52" fill="none" stroke="#e2e8f0" strokeWidth="22" />
+                  : <circle cx="85" cy="85" r="62" fill="none" stroke={DASH.barTrack} strokeWidth="22" />
                 }
-                <text x="75" y="68" textAnchor="middle" fontSize="20" fontWeight="900" fill="#10b981">
+                <text x="85" y="78" textAnchor="middle" fontSize="28" fontWeight="900" fill="#34d399">
                   {filteredStats.total > 0 ? `${Math.round((filteredStats.corretos / filteredStats.total) * 100)}%` : '—'}
                 </text>
-                <text x="75" y="83" textAnchor="middle" fontSize="9" fill="#64748b">Correto</text>
-                <text x="75" y="96" textAnchor="middle" fontSize="9" fontWeight="700" fill="#94a3b8">
+                <text x="85" y="94" textAnchor="middle" fontSize="10" fill={DASH.cardSubtle}>Correto</text>
+                <text x="85" y="108" textAnchor="middle" fontSize="9.5" fontWeight="700" fill={DASH.cardMuted}>
                   {filteredStats.total} instrumentos
                 </text>
               </svg>
@@ -1083,19 +1098,19 @@ export default function App() {
             <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem', width: '100%' }}>
               {filteredStats.items.map(d => (
                 <div key={d.label}>
-                  <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.7rem', marginBottom: 2 }}>
-                    <span style={{ display: 'flex', alignItems: 'center', gap: '0.35rem', color: '#475569' }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.72rem', marginBottom: 3, alignItems: 'center' }}>
+                    <span style={{ display: 'flex', alignItems: 'center', gap: '0.35rem', color: DASH.cardMuted }}>
                       <span style={{ width: 8, height: 8, borderRadius: '50%', background: d.color, display: 'inline-block', flexShrink: 0 }} />
                       {d.label}
                     </span>
-                    <span style={{ fontWeight: 700, color: '#1e293b' }}>
-                      {d.val}&nbsp;<span style={{ fontWeight: 400, color: '#94a3b8' }}>
+                    <span style={{ fontWeight: 800, color: DASH.cardText, fontSize: '0.75rem' }}>
+                      {d.val}&nbsp;<span style={{ fontWeight: 400, color: DASH.cardSubtle }}>
                         ({filteredStats.total > 0 ? ((d.val / filteredStats.total) * 100).toFixed(1) : '0.0'}%)
                       </span>
                     </span>
                   </div>
-                  <div style={{ background: '#e2e8f0', borderRadius: 3, height: 6 }}>
-                    <div style={{ width: `${filteredStats.total > 0 ? Math.round((d.val / filteredStats.total) * 100) : 0}%`, background: d.color, height: 6, borderRadius: 3 }} />
+                  <div style={{ background: DASH.barTrack, borderRadius: 4, height: 8 }}>
+                    <div style={{ width: `${filteredStats.total > 0 ? Math.round((d.val / filteredStats.total) * 100) : 0}%`, background: d.color, height: 8, borderRadius: 4 }} />
                   </div>
                 </div>
               ))}
