@@ -90,6 +90,75 @@ const REMOCAO_INAD_EVENTS = new Set(['580742', '581742']);
 const SUSP_INAD_EVENTS = new Set(['580711', '585709']);
 // Eventos de estorno (reversão contábil) que indicam anulação processada em 812210101
 const ESTORNO_EVENTS = new Set(['585716', '586700']);
+// Eventos de aprovação de parcela registrados em 812210103 (aprovação sem encerramento formal)
+// Série 58.0.xxx → NL/PORTALCONV (SICONV legado) | Série 58.1.xxx → NS/Transferegov
+const APROVACAO_812103_EVENTS = new Set(['580707', '581720']);
+// Eventos de inadimplência APÓS entrega da documentação — rito patológico dentro de 812210103
+const INAD_APOS_DOC_EVENTS = new Set(['580741', '581741']);
+// Situações TG terminais onde 812210103 sem evento rastreável é anomalia (strings pré-normalizadas)
+const TERMINAL_TG_NORM = new Set([
+  'prestacao de contas aprovada com ressalvas',
+  'prestacao de contas aprovada',
+  'prestacao de contas concluida',
+  'prestacao de contas rejeitada',
+  'convenio anulado',
+  'instrumento anulado',
+  'convenio rescindido',
+  'cancelado',
+]);
+
+// Tabela de referência de eventos da conta 812210103 — v0.3.0 (2026-05-15)
+// Fonte: SIAFI/TABAPOIO-EVENTO-CONEVENTO consultado em 15/05/2026
+// Séries paralelas: 58.0.xxx → NL/PORTALCONV (SICONV legado) | 58.1.xxx → NS/Transferegov
+const EVENTOS_812210103_META: Record<string, {
+  descricao: string;
+  tipoDoc: 'NL' | 'NS';
+  faseConvenio: string;
+  natureza: 'comprovacao' | 'aprovacao' | 'inadimplencia_pc';
+  eventoEstorno: string;
+  legitimoNaConta: boolean;
+}> = {
+  '581706': {
+    descricao: 'Comprovação — Transf. Voluntárias',
+    tipoDoc: 'NS',
+    faseConvenio: 'PC apresentada — aguardando análise do concedente',
+    natureza: 'comprovacao',
+    eventoEstorno: '586706',
+    legitimoNaConta: true,
+  },
+  '580707': {
+    descricao: 'Aprovação — TV — Convênio (PORTALCONV/NL)',
+    tipoDoc: 'NL',
+    faseConvenio: 'PC aprovada — encerramento formal pendente no SIAFI',
+    natureza: 'aprovacao',
+    eventoEstorno: '585707',
+    legitimoNaConta: false,
+  },
+  '581720': {
+    descricao: 'Aprovação Transf. Voluntárias (Transferegov/NS)',
+    tipoDoc: 'NS',
+    faseConvenio: 'PC aprovada — encerramento formal pendente no SIAFI',
+    natureza: 'aprovacao',
+    eventoEstorno: '586720',
+    legitimoNaConta: false,
+  },
+  '580741': {
+    descricao: 'Inadim.TV — Convênio após doc. (PORTALCONV/NL — privativo UG)',
+    tipoDoc: 'NL',
+    faseConvenio: 'Inadimplência registrada durante análise da PC',
+    natureza: 'inadimplencia_pc',
+    eventoEstorno: '585741',
+    legitimoNaConta: false,
+  },
+  '581741': {
+    descricao: 'Inadimplência de T.V. Após Doc. (Transferegov/NS — ISF: N/A)',
+    tipoDoc: 'NS',
+    faseConvenio: 'Inadimplência registrada durante análise da PC',
+    natureza: 'inadimplencia_pc',
+    eventoEstorno: '586741',
+    legitimoNaConta: false,
+  },
+};
 
 const normalizeText = (text: string) => {
   if (!text) return "";
@@ -677,6 +746,8 @@ export default function App() {
           display: info.display,
           eventos: info.eventos,
         }));
+        // Declarado no escopo externo para ser acessível tanto na lógica de status quanto nos motivos
+        const conta812103 = detectedAccounts.find(a => a.code === '812210103');
 
         const situacaoSiafiDisplay =
           detectedAccounts.length === 0
@@ -727,6 +798,18 @@ export default function App() {
             const hasEstorno = allEventos.some(e => ESTORNO_EVENTS.has(e));
             const isInstrumentoAnulado = normalizeStatusKey(situacaoTg) === normalizeStatusKey("Instrumento Anulado");
 
+            // P0 — Motor de eventos 812210103 (v0.3.0)
+            // Prioridade: inad_pc > aprovacao > sem_evento (todos excluídos quando hasConclusao=true)
+            const situacaoTgNorm = normalizeStatusKey(situacaoTg);
+            const has812103InadAposDoc = !hasConclusao && conta812103 !== undefined
+              && conta812103.eventos.some(e => INAD_APOS_DOC_EVENTS.has(e));
+            const has812103Aprovacao = !hasConclusao && !has812103InadAposDoc
+              && conta812103 !== undefined
+              && conta812103.eventos.some(e => APROVACAO_812103_EVENTS.has(e));
+            const has812103SemEvento = !hasConclusao && !has812103InadAposDoc && !has812103Aprovacao
+              && conta812103 !== undefined && conta812103.eventos.length === 0
+              && TERMINAL_TG_NORM.has(situacaoTgNorm);
+
             // Contas efetivas para validação após filtragem de histórico de ciclo de vida
             let accountsForValidation = detectedAccounts;
             if (hasConclusao) {
@@ -745,6 +828,18 @@ export default function App() {
 
             if (detectedAccounts.length === 0) {
               statusConciliacao = "Sem Saldo no SIAFI";
+              if (!confirmedCorrectIds.has(idSiafi)) alertas++;
+            } else if (has812103InadAposDoc) {
+              // P0-A: inadimplência após entrega da documentação — rito patológico em 812210103
+              statusConciliacao = "Inconsistência — Inadimplência na fase A Aprovar";
+              if (!confirmedCorrectIds.has(idSiafi)) inconsistencias++;
+            } else if (has812103Aprovacao) {
+              // P0-B: aprovação lançada em 812210103 sem encerramento formal no SIAFI
+              statusConciliacao = "Atenção — Aprovação sem encerramento no SIAFI";
+              if (!confirmedCorrectIds.has(idSiafi)) alertas++;
+            } else if (has812103SemEvento) {
+              // P0-C: 812210103 sem evento rastreável (TG=-9) em situação TG terminal
+              statusConciliacao = "Revisão Manual — Sem Rastreabilidade de Evento";
               if (!confirmedCorrectIds.has(idSiafi)) alertas++;
             } else if (hasConclusao && normalizeStatusKey(situacaoTg) !== normalizeStatusKey("Prestação de Contas Concluída")) {
               statusConciliacao = "Atenção — Conclusão SIAFI sem encerramento no TG";
@@ -828,6 +923,16 @@ export default function App() {
         } else if (statusConciliacao === "Atenção — Conclusão SIAFI sem encerramento no TG") {
           const evConc = [...new Set(detectedAccounts.flatMap(a => a.eventos).filter(e => CONCLUSAO_EVENTS.has(e)))];
           motivo = `SIAFI registra conclusão (ev. ${evConc.join(", ")}) mas TG indica '${situacaoTg}'. Verificar atualização no Transferegov.`;
+        } else if (statusConciliacao === "Atenção — Aprovação sem encerramento no SIAFI") {
+          const aprovEvs = conta812103?.eventos.filter(e => APROVACAO_812103_EVENTS.has(e)) ?? [];
+          const aprovMeta = aprovEvs.map(e => EVENTOS_812210103_META[e]?.descricao ?? e).join(', ');
+          motivo = `SIAFI registra aprovação de parcela (ev. ${aprovEvs.join(', ')} — ${aprovMeta}) em 812210103 (A Aprovar). Encerramento formal pendente: instrumento deve migrar para 812210104 ou conta de conclusão. TG indica '${situacaoTg}'. Verificar NS de encerramento no CADREDUZTV.`;
+        } else if (statusConciliacao === "Inconsistência — Inadimplência na fase A Aprovar") {
+          const inadEvs = conta812103?.eventos.filter(e => INAD_APOS_DOC_EVENTS.has(e)) ?? [];
+          const inadMeta = inadEvs.map(e => EVENTOS_812210103_META[e]?.descricao ?? e).join(', ');
+          motivo = `Inadimplência durante análise da PC (ev. ${inadEvs.join(', ')} — ${inadMeta}) em 812210103 (A Aprovar). Rito patológico: convenente declarado inadimplente após entrega da documentação. Verificar: cancelamento da inadimplência, arquivamento ou providências administrativas pendentes.`;
+        } else if (statusConciliacao === "Revisão Manual — Sem Rastreabilidade de Evento") {
+          motivo = `Conta 812210103 (A Aprovar) sem evento contábil rastreável (TG retorna -9) com situação TG terminal ('${situacaoTg}'). Possível instrumento SICONV pré-2014 ou saldo residual sem origem identificável. Verificar CADREDUZTV (TRANSF-CADREDUZTV-CONTVREDUZ) e histórico de movimentação.`;
         } else if (statusConciliacao === "Inconsistência (Rito Patológico)") {
           motivo = `Conta(s) fora do conjunto válido para '${situacaoTg}': ${contasForaDoConjunto.join(" | ")}`;
         } else if (statusConciliacao === "Revisão Manual - ID Ambíguo") {
@@ -897,8 +1002,10 @@ export default function App() {
     if (['Regra Pendente - Revisar', 'Sem Saldo no SIAFI',
          'Revisão Manual - ID Ambíguo', 'Status Não Mapeado',
          'Atenção — Conclusão SIAFI sem encerramento no TG',
-         'Atenção — Anulação sem estorno contábil no SIAFI'].includes(status)) return 'status-alert';
-    return 'status-incorrect'; // Inconsistência (Rito Patológico) e outros
+         'Atenção — Anulação sem estorno contábil no SIAFI',
+         'Atenção — Aprovação sem encerramento no SIAFI',
+         'Revisão Manual — Sem Rastreabilidade de Evento'].includes(status)) return 'status-alert';
+    return 'status-incorrect';
   };
 
   const getStatusIcon = (status: string) => {
@@ -908,8 +1015,10 @@ export default function App() {
          'Revisão Manual - ID Ambíguo', 'Status Não Mapeado',
          'Sem Registro no Transferegov',
          'Atenção — Conclusão SIAFI sem encerramento no TG',
-         'Atenção — Anulação sem estorno contábil no SIAFI'].includes(status)) return <AlertCircle size={14} style={style} />;
-    return <XCircle size={14} style={style} />; // Inconsistência (Rito Patológico)
+         'Atenção — Anulação sem estorno contábil no SIAFI',
+         'Atenção — Aprovação sem encerramento no SIAFI',
+         'Revisão Manual — Sem Rastreabilidade de Evento'].includes(status)) return <AlertCircle size={14} style={style} />;
+    return <XCircle size={14} style={style} />;
   };
 
   return (
@@ -1209,6 +1318,9 @@ export default function App() {
               <option value="Status Não Mapeado">Status Não Mapeado</option>
               <option value="Atenção — Conclusão SIAFI sem encerramento no TG">Conclusão SIAFI sem encerramento no TG</option>
               <option value="Atenção — Anulação sem estorno contábil no SIAFI">Anulação sem estorno contábil no SIAFI</option>
+              <option value="Atenção — Aprovação sem encerramento no SIAFI">Aprovação sem encerramento no SIAFI (812210103)</option>
+              <option value="Inconsistência — Inadimplência na fase A Aprovar">Inadimplência na fase A Aprovar (812210103)</option>
+              <option value="Revisão Manual — Sem Rastreabilidade de Evento">Sem Rastreabilidade de Evento (812210103)</option>
             </select>
             {(filterNrInstrumento || filterSituacaoTg || filterContaSiafi || filterStatus || filterConvenente) && (
               <button
@@ -1365,7 +1477,8 @@ export default function App() {
                 <ul style={{ margin: '0 0 1.25rem 1.1rem', padding: 0 }}>
                   <li>Cruzamento de dados estruturados em tempo real.</li>
                   <li>Identificação automática de divergências de situação contábil.</li>
-                  <li>Aplicação de hierarquia de eventos SIAFI (5 níveis de prioridade).</li>
+                  <li>Aplicação de hierarquia de eventos SIAFI (P1–P5 + motor P0 para conta 812210103).</li>
+                  <li>Motor 812210103 (v0.3.0): aprovação sem encerramento, inadimplência na fase PC e sem rastreabilidade de evento.</li>
                   <li>Geração de relatórios de conformidade em Excel.</li>
                 </ul>
                 <p style={{ fontWeight: 700, color: '#e2e8f0', marginBottom: '0.5rem' }}>Metas de Desempenho</p>
@@ -1420,7 +1533,7 @@ export default function App() {
     )}
 
     <footer style={{ textAlign: 'center', padding: '2rem 0 1rem', color: '#475569', fontSize: '0.72rem', borderTop: '1px solid #1f2937', marginTop: '2rem' }}>
-      SIACT Hub · v0.2.0 · Build 2026-05-14 · MTur — Coordenação de Análise Financeira de Prestação de Contas
+      SIACT Hub · v0.3.0 · Build 2026-05-15 · MTur — Coordenação de Análise Financeira de Prestação de Contas
     </footer>
 
     </ErrorBoundary>
