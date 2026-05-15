@@ -130,14 +130,8 @@ const extractTransferId = (val: string | number | undefined): string | null => {
   return match ? match[1] : null;
 };
 
-// SKILL §5.1: Contas Críticas — ordem conforme roteiro
-const CRITICAL_ACCS = [
-  { code: "812210211", label: "Concluído",   color: "#10b981" },
-  { code: "812210109", label: "Anulado",     color: "#ef4444" },
-  { code: "812210104", label: "Aprovado",    color: "#3b82f6" },
-  { code: "811210109", label: "Extinto",     color: "#8b5cf6" },
-  { code: "811210100", label: "Em Execução", color: "#f59e0b" },
-];
+// Regex pré-compilado — reutilizado no loop de processamento SIAFI (B5)
+const CONTA_9_DIGITS = /^\d{9}$/;
 
 // ── Tema do Dashboard (dark-mode) ─────────────────────────────────────────
 // Para reverter ao tema claro, substitua cada valor pelo comentado à direita.
@@ -152,6 +146,21 @@ const DASH = {
   numColor:   '#60a5fa',               // revert → '#1e293b'
 };
 // ──────────────────────────────────────────────────────────────────────────
+
+const PAGE_SIZE = 50;
+
+interface ConciliacaoResult {
+  idSiafi: string;
+  valorSiafi: string;
+  convenenteNome: string;
+  convenenteSiafi: string;
+  cnpjSiafi: string;
+  situacaoRawTg: string;
+  situacaoTg: string;
+  situacaoSiafiDisplay: string;
+  statusConciliacao: string;
+  fullData: { "Status de Conciliação": string; "Motivo do Alerta": string };
+}
 
 class ErrorBoundary extends Component<
   { children: ReactNode },
@@ -193,7 +202,7 @@ class ErrorBoundary extends Component<
 export default function App() {
   const [fileTransferegov, setFileTransferegov] = useState<File | null>(null);
   const [fileSiafi, setFileSiafi] = useState<File | null>(null);
-  const [results, setResults] = useState<any[]>([]);
+  const [results, setResults] = useState<ConciliacaoResult[]>([]);
   const [isProcessing, setIsProcessing] = useState(false);
   const [stats, setStats] = useState({
     total: 0, corretos: 0, inconsistencias: 0, naoEncontrados: 0, alertas: 0,
@@ -203,6 +212,10 @@ export default function App() {
   const [filterContaSiafi, setFilterContaSiafi] = useState('');
   const [filterStatus, setFilterStatus] = useState('');
   const [modalOpen, setModalOpen] = useState<'guide' | 'compliance' | null>(null);
+  const [errorMsg, setErrorMsg] = useState<string | null>(null);
+  const [filterConvenente, setFilterConvenente] = useState('');
+  const [currentPage, setCurrentPage] = useState(0);
+  const [processingPhase, setProcessingPhase] = useState('');
 
   const dashboard = useMemo(() => {
     if (results.length === 0) return null;
@@ -286,14 +299,22 @@ export default function App() {
 
   const filteredResults = useMemo(() => {
     const idTrim = filterNrInstrumento.trim();
+    const convTrim = filterConvenente.trim().toLowerCase();
     return results.filter(r => {
       if (idTrim && !String(r.idSiafi ?? '').includes(idTrim)) return false;
       if (filterSituacaoTg && r.situacaoRawTg !== filterSituacaoTg) return false;
       if (filterContaSiafi && !String(r.situacaoSiafiDisplay ?? '').includes(filterContaSiafi)) return false;
       if (filterStatus && r.statusConciliacao !== filterStatus) return false;
+      if (convTrim && !String(r.convenenteNome ?? '').toLowerCase().includes(convTrim) &&
+          !String(r.cnpjSiafi ?? '').includes(filterConvenente.trim())) return false;
       return true;
     });
-  }, [results, filterNrInstrumento, filterSituacaoTg, filterContaSiafi, filterStatus]);
+  }, [results, filterNrInstrumento, filterSituacaoTg, filterContaSiafi, filterStatus, filterConvenente]);
+
+  const paginatedResults = useMemo(() => {
+    const start = currentPage * PAGE_SIZE;
+    return filteredResults.slice(start, start + PAGE_SIZE);
+  }, [filteredResults, currentPage]);
 
   const filteredStats = useMemo(() => {
     const seen = new Set<string>();
@@ -334,6 +355,8 @@ export default function App() {
   const processFiles = async () => {
     if (!fileTransferegov || !fileSiafi) return;
     setIsProcessing(true);
+    setErrorMsg(null);
+    setProcessingPhase("Lendo arquivos...");
 
     try {
       const readExcelMatrix = (file: File) => {
@@ -362,8 +385,9 @@ export default function App() {
         readExcelMatrix(fileSiafi),
       ]);
 
+      setProcessingPhase("Processando Transferegov...");
       if (rowsTg.length === 0 || rowsSiafi.length === 0) {
-        alert("Uma das planilhas está vazia!");
+        setErrorMsg("Uma das planilhas está vazia! Verifique os arquivos selecionados.");
         setIsProcessing(false);
         return;
       }
@@ -419,8 +443,9 @@ export default function App() {
         let ambiguousRow = false;
 
         // LAYER 1 — header-based detection (always preferred, zero ambiguity)
-        if (idColTgIdx !== -1 && extractTransferId(row[idColTgIdx])) {
-          id = extractTransferId(row[idColTgIdx])!;
+        const candidateId = idColTgIdx !== -1 ? extractTransferId(row[idColTgIdx]) : null;
+        if (candidateId) {
+          id = candidateId;
         } else {
           // LAYER 2 — FIX-7 blind scanner with depth-defense:
           // · Skip columns whose headers are known non-ID types
@@ -479,13 +504,14 @@ export default function App() {
         }
       }
 
+      setProcessingPhase("Processando SIAFI...");
       // --- 2. Process SIAFI (formato normalizado — novo formato MTur 2026) ---
       // Cada linha = instrumento × conta contábil × evento
       // Fase 1: Localizar colunas pelos cabeçalhos
       let siafiHeaderRowIdx = -1;
-      let contaColIdx      = -1;  // "Conta Contábil" → código 9 dígitos como VALOR
-      let valorColIdx      = -1;  // "Transferência - Valor" → valor de referência
-      let eventoColIdx     = -1;  // "Evento" → código do evento contábil
+      let contaColIdx          = -1;  // "Conta Contábil" → código 9 dígitos
+      let valorColIdx          = -1;  // "Transferência - Valor" → valor de referência
+      let eventoColIdx         = -1;  // "Evento" → código do evento contábil
       let cnpjColSiafiIdx      = -1;  // CNPJ do convenente
       let convenentColSiafiIdx = -1;  // Nome do convenente
 
@@ -517,7 +543,7 @@ export default function App() {
       }
 
       if (contaColIdx === -1) {
-        alert("Não foi possível identificar a coluna 'Conta Contábil' na planilha SIAFI. Verifique o formato do arquivo.");
+        setErrorMsg("Não foi possível identificar a coluna 'Conta Contábil' na planilha SIAFI. Verifique o formato do arquivo.");
         setIsProcessing(false);
         return;
       }
@@ -577,6 +603,7 @@ export default function App() {
         contas: Map<string, ContraEntry>;
         cnpj: string;
         convenente: string;
+        valor: string;
       }>();
       let lastIdSiafi = "";
       let lastCnpjSiafi = "";
@@ -595,7 +622,7 @@ export default function App() {
 
         // Conta Contábil — deve ser exatamente 9 dígitos
         const contaRaw = String(row[contaColIdx] ?? "").trim();
-        if (!contaRaw.match(/^\d{9}$/)) continue;
+        if (!CONTA_9_DIGITS.test(contaRaw)) continue;
 
         // CNPJ (carry-forward)
         if (cnpjColSiafiIdx !== -1) {
@@ -613,11 +640,15 @@ export default function App() {
 
         // Inicializar entrada do instrumento
         if (!instrumentMap.has(idSiafi)) {
-          instrumentMap.set(idSiafi, { contas: new Map(), cnpj: lastCnpjSiafi, convenente: lastConvenenteSiafi });
+          instrumentMap.set(idSiafi, { contas: new Map(), cnpj: lastCnpjSiafi, convenente: lastConvenenteSiafi, valor: "" });
         }
         const entry = instrumentMap.get(idSiafi)!;
         if (!entry.cnpj && lastCnpjSiafi) entry.cnpj = lastCnpjSiafi;
         if (!entry.convenente && lastConvenenteSiafi) entry.convenente = lastConvenenteSiafi;
+        if (!entry.valor && valorColIdx !== -1) {
+          const rawVal = String(row[valorColIdx] ?? "").trim();
+          if (rawVal && rawVal !== "0" && rawVal !== "-9") entry.valor = rawVal;
+        }
 
         // Registrar conta contábil
         if (!entry.contas.has(contaRaw)) {
@@ -638,7 +669,7 @@ export default function App() {
       // Fase 3: Gerar resultados a partir do mapa de instrumentos
       let corretos = 0, inconsistencias = 0, naoEncontrados = 0, alertas = 0;
       const confirmedCorrectIds = new Set<string>();
-      const finalResults: any[] = [];
+      const finalResults: ConciliacaoResult[] = [];
 
       for (const [idSiafi, entry] of instrumentMap) {
         const detectedAccounts = [...entry.contas.entries()].map(([code, info]) => ({
@@ -659,7 +690,7 @@ export default function App() {
 
         const convenenteSiafi = entry.convenente;
         const cnpjSiafi = entry.cnpj;
-        const situacaoRawSiafi = situacaoSiafiDisplay;
+        const valorSiafi = entry.valor || "";
 
         let situacaoTg = "Sem Registro no Transferegov";
         let situacaoRawTg = "Sem Registro no Transferegov";
@@ -667,13 +698,12 @@ export default function App() {
         let statusConciliacao = "";
         let contasForaDoConjunto: string[] = [];
 
-        if (tgMap.has(idSiafi) && !tgMap.get(idSiafi)!.ambiguous) {
-          const tgEntry = tgMap.get(idSiafi)!;
-          situacaoRawTg = tgEntry.status || String(tgEntry.fullRow[15] ?? "").trim();
+        const tgData = tgMap.get(idSiafi);
+        if (tgData && !tgData.ambiguous) {
+          situacaoRawTg = tgData.status || (statusColTgIdx !== -1 ? String(tgData.fullRow[statusColTgIdx] ?? "").trim() : "");
         }
 
-        if (tgMap.has(idSiafi)) {
-          const tgData = tgMap.get(idSiafi)!;
+        if (tgData) {
           if (tgData.ambiguous) {
             situacaoTg = "Ambiguidade no ID (TG)";
             statusConciliacao = "Revisão Manual - ID Ambíguo";
@@ -816,11 +846,11 @@ export default function App() {
 
         finalResults.push({
           idSiafi,
+          valorSiafi,
           convenenteNome,
           convenenteSiafi,
           cnpjSiafi,
           situacaoRawTg,
-          situacaoRawSiafi,
           situacaoTg,
           situacaoSiafiDisplay,
           statusConciliacao,
@@ -830,39 +860,31 @@ export default function App() {
 
       setStats({ total: finalResults.length, corretos, inconsistencias, naoEncontrados, alertas });
       setResults(finalResults);
+      setCurrentPage(0);
+      setProcessingPhase("");
     } catch (err) {
       console.error(err);
-      alert("Erro ao processar planilhas.");
+      setErrorMsg("Erro ao processar planilhas. Verifique o formato dos arquivos e tente novamente.");
+      setProcessingPhase("");
     }
 
     setIsProcessing(false);
   };
 
-  // SKILL §3 — Exportação com esquema fixo A-F (Validação de Colunas)
-  // A: ID (6 dígitos)  B: Convenente  C: CNPJ  D: Situação Transferegov
-  // E: Situação SIAFI (nomes por extenso do accountMap)  F: Status (Conciliação)
-  // Carry-forward de CNPJ/Convenente garantido pelos campos r.cnpjSiafi / r.convenenteSiafi.
+  // SKILL §3 — Exportação com esquema fixo A-G (Validação de Colunas)
+  // A: ID  B: Convenente  C: CNPJ  D: Valor (R$)  E: Situação Transferegov
+  // F: Situação SIAFI  G: Status  H: Motivo do Alerta
   const exportResults = () => {
-    const dataToExport = filteredResults.map(r => {
-      // Coluna E: se há múltiplas contas, o display já está concatenado com ' | '
-      // Garantir que cada segmento use o nome do accountMap (já aplicado na construção)
-      const situacaoSiafi = r.situacaoSiafiDisplay;
-
-      return {
-        // A — ID do Instrumento (6 dígitos, início 7)
-        "ID": r.idSiafi,
-        // B — Convenente com carry-forward (nunca vazio)
-        "Convenente": r.convenenteSiafi || r.convenenteNome || "",
-        // C — CNPJ com carry-forward (nunca vazio)
-        "CNPJ": r.cnpjSiafi || "",
-        // D — Situação Transferegov (Col P do arquivo TG)
-        "Situação Transferegov": r.situacaoRawTg,
-        // E — Situação SIAFI: [Código] - [Nome] com separador ' | ' para múltiplas contas
-        "Situação SIAFI": situacaoSiafi,
-        // F — Status da Conciliação
-        "Status (Conciliação)": r.statusConciliacao,
-      };
-    });
+    const dataToExport = filteredResults.map(r => ({
+      "ID": r.idSiafi,
+      "Convenente": r.convenenteSiafi || r.convenenteNome || "",
+      "CNPJ": r.cnpjSiafi || "",
+      "Valor (R$)": r.valorSiafi || "",
+      "Situação Transferegov": r.situacaoRawTg,
+      "Situação SIAFI": r.situacaoSiafiDisplay,
+      "Status (Conciliação)": r.statusConciliacao,
+      "Motivo do Alerta": r.fullData["Motivo do Alerta"],
+    }));
     const ws = XLSX.utils.json_to_sheet(dataToExport);
     const wb = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(wb, ws, "Conciliação");
@@ -956,8 +978,15 @@ export default function App() {
         disabled={!fileTransferegov || !fileSiafi || isProcessing}
       >
         <Play size={20} />
-        {isProcessing ? "Processando Conciliação..." : "Iniciar Conciliação Automática"}
+        {isProcessing ? (processingPhase || "Processando Conciliação...") : "Iniciar Conciliação Automática"}
       </button>
+
+      {errorMsg && (
+        <div style={{ display: 'flex', alignItems: 'center', gap: '0.6rem', background: 'rgba(239,68,68,0.12)', border: '1px solid rgba(239,68,68,0.4)', borderRadius: 8, padding: '0.75rem 1rem', marginBottom: '1rem', color: '#fca5a5', fontSize: '0.88rem' }}>
+          <XCircle size={16} color="#fca5a5" style={{ flexShrink: 0 }} />
+          {errorMsg}
+        </div>
+      )}
 
       {dashboard && (
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '1.25rem', margin: '1.5rem 0 0.5rem' }}>
@@ -1063,7 +1092,7 @@ export default function App() {
                 <TrendingUp size={16} color="#34d399" />
                 <span style={{ fontWeight: 700, fontSize: '0.82rem', color: DASH.cardText }}>Resultado da Auditoria</span>
               </div>
-              {(filterNrInstrumento || filterSituacaoTg || filterContaSiafi || filterStatus) && (
+              {(filterNrInstrumento || filterSituacaoTg || filterContaSiafi || filterStatus || filterConvenente) && (
                 <span style={{ fontSize: '0.63rem', fontWeight: 700, color: '#60a5fa', background: 'rgba(96,165,250,0.15)', border: '1px solid rgba(96,165,250,0.3)', borderRadius: 99, padding: '2px 8px' }}>
                   Filtrado
                 </span>
@@ -1135,23 +1164,30 @@ export default function App() {
               type="text"
               placeholder="Nº Instrumento"
               value={filterNrInstrumento}
-              onChange={e => setFilterNrInstrumento(e.target.value)}
-              style={{ flex: '0 1 160px', minWidth: 130, padding: '0.45rem 0.75rem', border: '1px solid #cbd5e1', borderRadius: 8, fontSize: '0.82rem', outline: 'none' }}
+              onChange={e => { setFilterNrInstrumento(e.target.value); setCurrentPage(0); }}
+              style={{ flex: '0 1 150px', minWidth: 120, padding: '0.45rem 0.75rem', border: '1px solid #334155', borderRadius: 8, fontSize: '0.82rem', outline: 'none', background: '#1e293b', color: '#f1f5f9' }}
+            />
+            <input
+              type="text"
+              placeholder="Convenente / CNPJ"
+              value={filterConvenente}
+              onChange={e => { setFilterConvenente(e.target.value); setCurrentPage(0); }}
+              style={{ flex: '0 1 180px', minWidth: 150, padding: '0.45rem 0.75rem', border: '1px solid #334155', borderRadius: 8, fontSize: '0.82rem', outline: 'none', background: '#1e293b', color: '#f1f5f9' }}
             />
             <select
               value={filterSituacaoTg}
-              onChange={e => setFilterSituacaoTg(e.target.value)}
-              style={{ flex: '1 1 200px', minWidth: 180, padding: '0.45rem 0.75rem', border: '1px solid #cbd5e1', borderRadius: 8, fontSize: '0.82rem', background: '#fff', outline: 'none' }}
+              onChange={e => { setFilterSituacaoTg(e.target.value); setCurrentPage(0); }}
+              style={{ flex: '1 1 190px', minWidth: 170, padding: '0.45rem 0.75rem', border: '1px solid #334155', borderRadius: 8, fontSize: '0.82rem', background: '#1e293b', color: '#f1f5f9', outline: 'none' }}
             >
-              <option value="">Todas as Situações (Transferegov)</option>
+              <option value="">Todas as Situações (TG)</option>
               {uniqueTgSituacoes.map(s => (
                 <option key={s} value={s}>{s}</option>
               ))}
             </select>
             <select
               value={filterContaSiafi}
-              onChange={e => setFilterContaSiafi(e.target.value)}
-              style={{ flex: '1 1 220px', minWidth: 200, padding: '0.45rem 0.75rem', border: '1px solid #cbd5e1', borderRadius: 8, fontSize: '0.82rem', background: '#fff', outline: 'none' }}
+              onChange={e => { setFilterContaSiafi(e.target.value); setCurrentPage(0); }}
+              style={{ flex: '1 1 200px', minWidth: 180, padding: '0.45rem 0.75rem', border: '1px solid #334155', borderRadius: 8, fontSize: '0.82rem', background: '#1e293b', color: '#f1f5f9', outline: 'none' }}
             >
               <option value="">Todas as Contas (SIAFI)</option>
               {uniqueContasSiafi.map(({ code, name }) => (
@@ -1160,24 +1196,24 @@ export default function App() {
             </select>
             <select
               value={filterStatus}
-              onChange={e => setFilterStatus(e.target.value)}
-              style={{ flex: '1 1 180px', minWidth: 160, padding: '0.45rem 0.75rem', border: '1px solid #cbd5e1', borderRadius: 8, fontSize: '0.82rem', background: '#fff', outline: 'none' }}
+              onChange={e => { setFilterStatus(e.target.value); setCurrentPage(0); }}
+              style={{ flex: '1 1 170px', minWidth: 150, padding: '0.45rem 0.75rem', border: '1px solid #334155', borderRadius: 8, fontSize: '0.82rem', background: '#1e293b', color: '#f1f5f9', outline: 'none' }}
             >
               <option value="">Todos os Status</option>
-              <option value="Correto">✅ Correto (Rito Ordinário)</option>
-              <option value="Inconsistência (Rito Patológico)">⛔ Inconsistência (Rito Patológico)</option>
-              <option value="Sem Registro no Transferegov">🔍 Sem Registro no Transferegov</option>
-              <option value="Regra Pendente - Revisar">⏳ Regra Pendente - Revisar</option>
-              <option value="Sem Saldo no SIAFI">⚠️ Sem Saldo no SIAFI</option>
-              <option value="Revisão Manual - ID Ambíguo">🔀 Revisão Manual - ID Ambíguo</option>
-              <option value="Status Não Mapeado">❓ Status Não Mapeado</option>
-              <option value="Atenção — Conclusão SIAFI sem encerramento no TG">⚠️ Conclusão SIAFI sem encerramento no TG</option>
-              <option value="Atenção — Anulação sem estorno contábil no SIAFI">⚠️ Anulação sem estorno contábil no SIAFI</option>
+              <option value="Correto">Correto (Rito Ordinário)</option>
+              <option value="Inconsistência (Rito Patológico)">Inconsistência (Rito Patológico)</option>
+              <option value="Sem Registro no Transferegov">Sem Registro no Transferegov</option>
+              <option value="Regra Pendente - Revisar">Regra Pendente - Revisar</option>
+              <option value="Sem Saldo no SIAFI">Sem Saldo no SIAFI</option>
+              <option value="Revisão Manual - ID Ambíguo">Revisão Manual - ID Ambíguo</option>
+              <option value="Status Não Mapeado">Status Não Mapeado</option>
+              <option value="Atenção — Conclusão SIAFI sem encerramento no TG">Conclusão SIAFI sem encerramento no TG</option>
+              <option value="Atenção — Anulação sem estorno contábil no SIAFI">Anulação sem estorno contábil no SIAFI</option>
             </select>
-            {(filterNrInstrumento || filterSituacaoTg || filterContaSiafi || filterStatus) && (
+            {(filterNrInstrumento || filterSituacaoTg || filterContaSiafi || filterStatus || filterConvenente) && (
               <button
-                onClick={() => { setFilterNrInstrumento(''); setFilterSituacaoTg(''); setFilterContaSiafi(''); setFilterStatus(''); }}
-                style={{ padding: '0.45rem 0.9rem', border: '1px solid #e2e8f0', borderRadius: 8, fontSize: '0.82rem', background: '#f8fafc', cursor: 'pointer', color: '#64748b' }}
+                onClick={() => { setFilterNrInstrumento(''); setFilterSituacaoTg(''); setFilterContaSiafi(''); setFilterStatus(''); setFilterConvenente(''); setCurrentPage(0); }}
+                style={{ padding: '0.45rem 0.9rem', border: '1px solid #334155', borderRadius: 8, fontSize: '0.82rem', background: '#1e293b', cursor: 'pointer', color: '#94a3b8' }}
               >
                 Limpar filtros
               </button>
@@ -1216,52 +1252,66 @@ export default function App() {
             <table>
               <thead>
                 <tr>
-                  <th>ID (A)</th>
-                  <th>Convenente (B)</th>
-                  <th>CNPJ (C)</th>
-                  <th>Situação Transferegov (D)</th>
-                  <th>Situação SIAFI (E)</th>
-                  <th>Status Conciliação (F)</th>
+                  <th>ID</th>
+                  <th>Convenente</th>
+                  <th>CNPJ</th>
+                  <th>Valor (R$)</th>
+                  <th>Situação Transferegov</th>
+                  <th>Situação SIAFI</th>
+                  <th>Status Conciliação</th>
+                  <th>Motivo</th>
                 </tr>
               </thead>
               <tbody>
-                {filteredResults.slice(0, 100).map((row, idx) => (
-                  <tr key={idx}>
-                    {/* A — ID */}
-                    <td>{row.idSiafi}</td>
-                    {/* B — Convenente (carry-forward) */}
-                    <td title={row.convenenteSiafi || row.convenenteNome}>
-                      {(() => {
-                        const conv = String(row.convenenteSiafi || row.convenenteNome || '');
-                        return conv.length > 28 ? conv.substring(0, 28) + '…' : conv || '—';
-                      })()}
-                    </td>
-                    {/* C — CNPJ (carry-forward) */}
-                    <td>{row.cnpjSiafi || '—'}</td>
-                    {/* D — Situação Transferegov */}
-                    <td>{String(row.situacaoRawTg ?? '—')}</td>
-                    {/* E — Situação SIAFI (nomes por extenso do accountMap) */}
-                    <td title={String(row.situacaoSiafiDisplay ?? '')}>
-                      {(() => {
-                        const siafi = String(row.situacaoSiafiDisplay ?? '');
-                        return siafi.length > 45 ? siafi.substring(0, 45) + '…' : siafi || '—';
-                      })()}
-                    </td>
-                    {/* F — Status Conciliação */}
-                    <td>
-                      <span className={`status-badge ${getStatusBadgeClass(String(row.statusConciliacao ?? ''))}`}>
-                        {getStatusIcon(String(row.statusConciliacao ?? ''))}
-                        {String(row.statusConciliacao ?? '—')}
-                      </span>
-                    </td>
-                  </tr>
-                ))}
+                {paginatedResults.map((row) => {
+                  const motivo = row.fullData["Motivo do Alerta"] || '—';
+                  return (
+                    <tr key={row.idSiafi}>
+                      <td>{row.idSiafi}</td>
+                      <td title={row.convenenteSiafi || row.convenenteNome}>
+                        {(() => { const c = String(row.convenenteSiafi || row.convenenteNome || ''); return c.length > 24 ? c.substring(0, 24) + '…' : c || '—'; })()}
+                      </td>
+                      <td>{row.cnpjSiafi || '—'}</td>
+                      <td style={{ whiteSpace: 'nowrap' }}>{row.valorSiafi || '—'}</td>
+                      <td>{String(row.situacaoRawTg ?? '—')}</td>
+                      <td title={String(row.situacaoSiafiDisplay ?? '')}>
+                        {(() => { const s = String(row.situacaoSiafiDisplay ?? ''); return s.length > 38 ? s.substring(0, 38) + '…' : s || '—'; })()}
+                      </td>
+                      <td>
+                        <span className={`status-badge ${getStatusBadgeClass(String(row.statusConciliacao ?? ''))}`}>
+                          {getStatusIcon(String(row.statusConciliacao ?? ''))}
+                          {String(row.statusConciliacao ?? '—')}
+                        </span>
+                      </td>
+                      <td title={motivo} style={{ color: 'var(--text-muted)', fontSize: '0.82rem', maxWidth: 220 }}>
+                        {motivo.length > 55 ? motivo.substring(0, 55) + '…' : motivo}
+                      </td>
+                    </tr>
+                  );
+                })}
               </tbody>
             </table>
-            {filteredResults.length > 100 && (
-              <p style={{ textAlign: 'center', marginTop: '1rem', color: 'var(--text-muted)' }}>
-                Mostrando as primeiras 100 linhas de {filteredResults.length}. Use o botão Exportar para obter o conjunto completo filtrado.
-              </p>
+            {filteredResults.length > PAGE_SIZE && (
+              <div style={{ display: 'flex', justifyContent: 'center', alignItems: 'center', gap: '1rem', marginTop: '1rem', fontSize: '0.85rem', color: 'var(--text-muted)' }}>
+                <button
+                  onClick={() => setCurrentPage(p => Math.max(0, p - 1))}
+                  disabled={currentPage === 0}
+                  style={{ padding: '0.35rem 0.9rem', border: '1px solid #334155', borderRadius: 6, background: currentPage === 0 ? 'transparent' : '#1e293b', color: currentPage === 0 ? '#475569' : '#94a3b8', cursor: currentPage === 0 ? 'default' : 'pointer', fontSize: '0.82rem' }}
+                >
+                  ← Anterior
+                </button>
+                <span>
+                  Página {currentPage + 1} de {Math.ceil(filteredResults.length / PAGE_SIZE)}
+                  <span style={{ color: '#475569', marginLeft: '0.5rem' }}>({filteredResults.length} registros)</span>
+                </span>
+                <button
+                  onClick={() => setCurrentPage(p => Math.min(Math.ceil(filteredResults.length / PAGE_SIZE) - 1, p + 1))}
+                  disabled={currentPage >= Math.ceil(filteredResults.length / PAGE_SIZE) - 1}
+                  style={{ padding: '0.35rem 0.9rem', border: '1px solid #334155', borderRadius: 6, background: currentPage >= Math.ceil(filteredResults.length / PAGE_SIZE) - 1 ? 'transparent' : '#1e293b', color: currentPage >= Math.ceil(filteredResults.length / PAGE_SIZE) - 1 ? '#475569' : '#94a3b8', cursor: currentPage >= Math.ceil(filteredResults.length / PAGE_SIZE) - 1 ? 'default' : 'pointer', fontSize: '0.82rem' }}
+                >
+                  Próxima →
+                </button>
+              </div>
             )}
           </div>
         </div>
@@ -1368,6 +1418,10 @@ export default function App() {
         </div>
       </div>
     )}
+
+    <footer style={{ textAlign: 'center', padding: '2rem 0 1rem', color: '#475569', fontSize: '0.72rem', borderTop: '1px solid #1f2937', marginTop: '2rem' }}>
+      SIACT Hub · v0.2.0 · Build 2026-05-14 · MTur — Coordenação de Análise Financeira de Prestação de Contas
+    </footer>
 
     </ErrorBoundary>
   );
